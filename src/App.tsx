@@ -36,6 +36,7 @@ import {
   type ItemIdentificationResult,
 } from "./poeItemParser";
 import ImportReviewModal from "./ImportReviewModal";
+import AppUpdater from "./AppUpdater";
 import "./App.css";
 
 type TrackingFlag =
@@ -5108,10 +5109,6 @@ return;
   capturedCursor = null;
 }
 
-await showOverlayLoading(
-  capturedCursor,
-);
-
 try {
   previousClipboard = await readText();
       } catch {
@@ -5140,6 +5137,10 @@ try {
           break;
         }
       }
+
+      await showOverlayLoading(
+        capturedCursor,
+      );
 
       if (
         !clipboardText.trim() ||
@@ -6388,8 +6389,10 @@ try {
   }
 
   return (
-    <main className="app">
-      <header className="app-header">
+  <main className="app">
+    <AppUpdater />
+
+    <header className="app-header">
         <div>
           <h1>PoE Collector</h1>
           <p className="subtitle">
