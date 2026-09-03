@@ -435,7 +435,7 @@ async function fetchWikiCategoryPageIds(
 
     if (!response.ok) {
       throw new Error(
-        `PoE Wiki category request failed (${response.status}).`,
+        `PoE 2 Wiki category request failed (${response.status}).`,
       );
     }
 
@@ -498,7 +498,7 @@ async function fetchWikiParsedLinkedNames(
 
   if (!response.ok) {
     throw new Error(
-      `PoE Wiki parsed-link request for "${pageTitle}" failed (${response.status}).`,
+      `PoE 2 Wiki parsed-link request for "${pageTitle}" failed (${response.status}).`,
     );
   }
 
@@ -508,7 +508,7 @@ async function fetchWikiParsedLinkedNames(
   if (!payload.parse) {
     throw new Error(
       payload.error?.info ??
-        `PoE Wiki could not parse "${pageTitle}".`,
+        `PoE 2 Wiki could not parse "${pageTitle}".`,
     );
   }
 
@@ -687,7 +687,7 @@ async function fetchKnownFoilSourceData():
     reliquaryPagesLoaded === 0
   ) {
     throw new Error(
-      "Every PoE Wiki Foil source failed to load.",
+      "Every PoE 2 Wiki Foil source failed to load.",
     );
   }
 
@@ -737,7 +737,7 @@ async function fetchAllRemoteUniques() {
 
     if (!response.ok) {
       throw new Error(
-        `PoE Wiki catalogue request failed (${response.status}).`,
+        `PoE 2 Wiki catalogue request failed (${response.status}).`,
       );
     }
 
@@ -1454,7 +1454,7 @@ try {
 
 if (remote.length < 300) {
     throw new Error(
-      `PoE Wiki returned only ${remote.length} usable unique entries. ` +
+      `PoE 2 Wiki returned only ${remote.length} usable unique entries. ` +
         "That is far below the expected catalogue size, so the local " +
         "catalogue was not changed.",
     );

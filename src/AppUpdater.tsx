@@ -254,12 +254,12 @@ export default function AppUpdater() {
             </span>
 
             <h2>
-              Updated to PoE Collector{" "}
+              Updated to PoE 2 Collector{" "}
               {installedNotice.version}
             </h2>
 
             <p>
-              PoE Collector was updated successfully.
+              PoE 2 Collector was updated successfully.
             </p>
           </div>
 
@@ -308,12 +308,12 @@ export default function AppUpdater() {
           </span>
 
           <h2>
-            PoE Collector {availableUpdate.version}
+            PoE 2 Collector {availableUpdate.version}
           </h2>
 
           <p>
             {downloaded
-              ? "The update has finished downloading. PoE Collector will close while Windows installs it."
+              ? "The update has finished downloading. PoE 2 Collector will close while Windows installs it."
               : `You are currently using version ${availableUpdate.currentVersion}.`}
           </p>
         </div>

@@ -274,7 +274,7 @@ function getVariantLabelTokens(
         /*
          * Numbers are handled by explicit count
          * checks below. Bare numbers are far too
-         * common in PoE item text to be safe
+         * common in PoE 2 item text to be safe
          * evidence by themselves.
          */
         return token.length >= 4;
@@ -736,7 +736,7 @@ export async function identifyUniqueFromClipboard(
       status: "invalid",
       parsed,
       message:
-        "Could not find a PoE item name and rarity in the pasted text.",
+        "Could not find a PoE 2 item name and rarity in the pasted text.",
     };
   }
 

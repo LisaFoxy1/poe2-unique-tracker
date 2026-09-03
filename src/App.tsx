@@ -426,8 +426,6 @@ const STATUS_KEYS: StatusKey[] = [
   "owned",
   "wearing",
   "foil",
-  "foulborn",
-  "vestigial",
 ];
 
 const DEFAULT_COLLECTION_RULES: CollectionRules = {
@@ -446,8 +444,6 @@ const DEFAULT_EXTRA_TRACKING: ExtraTracking = {
 
 const EXTRA_VARIANTS: ExtraVariant[] = [
   "foil",
-  "foulborn",
-  "vestigial",
 ];
 
 const DEFAULT_EDITION_AVAILABILITY: EditionAvailabilityMap = {
@@ -538,7 +534,7 @@ function isEditionUncertain(
    * Direct evidence always wins.
    *
    * If the parser literally sees the edition in-game,
-   * or the player says they own one, PoE Collector
+   * or the player says they own one, PoE 2 Collector
    * treats that edition as confirmed to exist.
    */
   if (
@@ -818,7 +814,7 @@ async function fetchWikiVariantLabels(
        * just because the Wiki is unavailable.
        */
       console.warn(
-        "Could not fetch PoE Wiki variant titles:",
+        "Could not fetch PoE 2 Wiki variant titles:",
         error,
       );
     }
@@ -1481,7 +1477,7 @@ if (!payload) {
       <div className="poe-overlay-header">
         <div className="poe-overlay-title-wrap">
           <span className="poe-overlay-kicker">
-            POE COLLECTOR
+            POE 2 COLLECTOR
           </span>
           <h1>Unique Tracker</h1>
         </div>
@@ -1700,7 +1696,7 @@ const hasUncertainEdition =
       <div className="poe-overlay-header">
         <div className="poe-overlay-title-wrap">
           <span className="poe-overlay-kicker">
-            POE COLLECTOR
+            POE 2 COLLECTOR
           </span>
           <h1>{payload.name}</h1>
 
@@ -2270,7 +2266,7 @@ const [
 return profiles;
   } catch (error) {
     console.error(
-      "Could not detect current Path of Exile league:",
+      "Could not detect current Path of Exile 2 league:",
       error,
     );
 
@@ -3318,7 +3314,7 @@ const isLegacyOnly =
 
       setCatalogueChecking(true);
       setAppError("");
-      setCatalogueCheckMessage("Checking PoE Wiki for catalogue updates...");
+      setCatalogueCheckMessage("Checking PoE 2 Wiki for catalogue updates...");
 
       const result = await syncCatalogueFromPoeWiki(db);
 
@@ -3349,7 +3345,7 @@ const isLegacyOnly =
         setCatalogueUpdateOpen(true);
       }
     } catch (error) {
-      console.error("Could not update catalogue from PoE Wiki:", error);
+      console.error("Could not update catalogue from PoE 2 Wiki:", error);
 
       const message =
         error instanceof Error ? error.message : String(error);
@@ -3534,12 +3530,12 @@ const isLegacyOnly =
     try {
       /*
        * Hot reload can leave a stale registration owned by this app.
-       * unregister() only affects PoE Collector's own registration.
+       * unregister() only affects PoE 2 Collector's own registration.
        */
       try {
         await unregister(newHotkey);
       } catch {
-        // Fine if PoE Collector did not have it registered.
+        // Fine if PoE 2 Collector did not have it registered.
       }
 
       /*
@@ -4412,7 +4408,7 @@ setActiveProfileId(
     OVERLAY_LABEL,
     {
       url: "index.html?overlay=1",
-      title: "PoE Collector Lookup",
+      title: "PoE 2 Collector Lookup",
       width: OVERLAY_WIDTH,
       height: OVERLAY_HEIGHT,
       decorations: false,
@@ -4735,7 +4731,7 @@ return;
     }
 
     setHotkeyBusy(true);
-    setHotkeyMessage("Copying hovered Path of Exile item...");
+    setHotkeyMessage("Copying hovered Path of Exile 2 item...");
 
     let previousClipboard = "";
     let capturedCursor: {
@@ -4768,7 +4764,7 @@ try {
 
       // The shortcut callback fires on release. Give Windows a brief moment
       // to finish releasing the physical Ctrl/Shift keys before we inject
-      // the ordinary Ctrl+C that Path of Exile understands.
+      // the ordinary Ctrl+C that Path of Exile 2 understands.
       await wait(35);
 
       await invoke("send_ctrl_c");
@@ -4795,12 +4791,12 @@ try {
         await writeText(previousClipboard);
 
         setHotkeyMessage(
-          "No item text was copied. Make sure the mouse is hovering a Path of Exile item.",
+          "No item text was copied. Make sure the mouse is hovering a Path of Exile 2 item.",
         );
 
         await emit<string>(
           "poe-overlay-message",
-          "No Path of Exile item was copied.",
+          "No Path of Exile 2 item was copied.",
         );
 
         return;
@@ -4830,7 +4826,7 @@ try {
         );
       } else {
         setHotkeyMessage(
-          "The hotkey copied an item, but PoE Collector could not match it cleanly.",
+          "The hotkey copied an item, but PoE 2 Collector could not match it cleanly.",
         );
 
         await emit<string>(
@@ -4857,11 +4853,21 @@ try {
         }
       }
 
-      setHotkeyMessage(
+      const lookupErrorMessage =
         error instanceof Error
-          ? `Hotkey failed: ${error.message}`
-          : `Hotkey failed: ${String(error)}`,
-      );
+          ? `Lookup failed: ${error.message}`
+          : `Lookup failed: ${String(error)}`;
+
+      setHotkeyMessage(lookupErrorMessage);
+
+      try {
+        await emit<string>(
+          "poe-overlay-message",
+          lookupErrorMessage,
+        );
+      } catch {
+        // The overlay may not have been created yet.
+      }
     } finally {
       setHotkeyBusy(false);
     }
@@ -5917,7 +5923,7 @@ try {
         const itemType = normalizeImportItemType(sheetName);
 
         // Auxiliary sheets such as Ole's ALT sheet are intentionally ignored.
-        // Only sheets that map to a real PoE Collector item type are imported.
+        // Only sheets that map to a real PoE 2 Collector item type are imported.
         if (!itemType) {
           continue;
         }
@@ -6040,9 +6046,9 @@ try {
 
     <header className="app-header">
         <div>
-          <h1>PoE Collector</h1>
+          <h1>PoE 2 Collector</h1>
           <p className="subtitle">
-            Path of Exile Unique Collection Tracker
+            Path of Exile 2 Unique Collection Tracker
           </p>
         </div>
 
@@ -6588,7 +6594,7 @@ editionSources={
               </span>
               <h2>{catalogueUpdate.label}</h2>
               <p>
-                New Path of Exile catalogue data is available.
+                New Path of Exile 2 catalogue data is available.
                 Your existing collection data has been kept.
               </p>
             </div>
@@ -6614,7 +6620,7 @@ editionSources={
 
             <p className="catalogue-update-note">
               New catalogue entries remain Unreviewed until you tell
-              PoE Collector whether you have them.
+              PoE 2 Collector whether you have them.
             </p>
 
             <div className="catalogue-update-actions">
@@ -6652,7 +6658,7 @@ editionSources={
               </span>
               <h2>How does this spreadsheet track uniques?</h2>
               <p>
-                PoE Collector detected a likely format, but you choose how the
+                PoE 2 Collector detected a likely format, but you choose how the
                 spreadsheet should be interpreted before anything is changed.
               </p>
             </div>
@@ -6765,7 +6771,7 @@ editionSources={
                       The newest catalogue release is {pendingImport.latestReleaseLine}.
                       Uniques introduced in that release are <strong>not</strong>
                       assumed Owned just because they are absent from this older
-                      spreadsheet. PoE Collector leaves their existing collection
+                      spreadsheet. PoE 2 Collector leaves their existing collection
                       state alone instead of inferring Owned.
                     </p>
 
@@ -6828,7 +6834,7 @@ editionSources={
                   </>
                 ) : (
                   <p className="catalogue-update-note">
-                    PoE Collector could not determine the newest release from
+                    PoE 2 Collector could not determine the newest release from
                     catalogue metadata. For safety, it will not infer any Owned
                     items from absence until that information is available.
                   </p>
@@ -6889,7 +6895,7 @@ editionSources={
               </span>
               <h2>Collection inferred safely</h2>
               <p>
-                PoE Collector used the missing list to fill {
+                PoE 2 Collector used the missing list to fill {
                   missingOnlySummary.destinationProfileName
                 } without pretending that uncertain or newly released uniques
                 are already owned.
@@ -6922,7 +6928,7 @@ editionSources={
                 <>
                   <p className="catalogue-update-note">
                     These uniques are new in release {missingOnlySummary.latestReleaseLine}
-                    and were not found in the spreadsheet, so PoE Collector did
+                    and were not found in the spreadsheet, so PoE 2 Collector did
                     <strong> not</strong> mark them Owned.
                   </p>
 
@@ -7035,7 +7041,7 @@ editionSources={
             <div className="settings-modal-header">
               <div>
                 <h2>Settings</h2>
-                <p>Customize how PoE Collector looks and behaves.</p>
+                <p>Customize how PoE 2 Collector looks and behaves.</p>
               </div>
 
               <button
@@ -7109,7 +7115,7 @@ editionSources={
 
   <p className="settings-help">
     Choose the shortcut used to check the
-    Path of Exile item under your mouse.
+    Path of Exile 2 item under your mouse.
   </p>
 
   <div
@@ -7298,7 +7304,7 @@ editionSources={
               <h3>Catalogue Updates</h3>
 
               <p className="settings-help">
-                PoE Collector checks the PoE Wiki catalogue in the background
+                PoE 2 Collector checks the PoE 2 Wiki catalogue in the background
                 at most once every 24 hours. Your local collection still works
                 normally while offline.
               </p>
@@ -7327,8 +7333,8 @@ editionSources={
               <h3>Imported Collection Matching</h3>
 
               <p className="settings-help">
-                Imported spreadsheets are reference data only. PoE Collector
-                matches their statuses onto the canonical Path of Exile
+                Imported spreadsheets are reference data only. PoE 2 Collector
+                matches their statuses onto the canonical Path of Exile 2
                 catalogue instead of creating catalogue entries from imported
                 names.
               </p>
@@ -7394,9 +7400,9 @@ editionSources={
               <h3>Item Parser Test</h3>
 
               <p className="settings-help">
-                Temporary development tool: hover a unique in Path of Exile,
+                Temporary development tool: hover a unique in Path of Exile 2,
                 press Ctrl+C, paste the copied item text here, and see whether
-                PoE Collector identifies the exact catalogue variant.
+                PoE 2 Collector identifies the exact catalogue variant.
               </p>
 
               <div
@@ -7424,10 +7430,10 @@ editionSources={
                   setParserTestText(event.target.value);
                   setParserTestResult(null);
                 }}
-                placeholder={`Item Class: Boots
+                placeholder={`Item Class: Staves
 Rarity: Unique
-Ralakesh's Impatience
-Riveted Boots
+The Raven's Flock
+Perching Staff
 --------
 ...`}
               />
