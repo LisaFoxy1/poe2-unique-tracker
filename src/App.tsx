@@ -132,6 +132,7 @@ type LeagueRolloverChange = {
 };
 
 type LeagueRolloverPreview = {
+  profileId: string;
   oldLeagueName: string;
   newLeagueName: string;
   changedUniques: number;
@@ -187,6 +188,14 @@ type MissingOnlyInferenceSummary = {
 
 const STANDARD_PROFILE_ID = "standard";
 const CURRENT_LEAGUE_PROFILE_ID = "current-league";
+
+function makeLeagueProfileId(
+  leagueKey: string,
+) {
+  return `league:${encodeURIComponent(
+    leagueKey,
+  )}`;
+}
 
 const IMPORT_SHEET_TYPES: Record<string, string> = {
   flask: "Flask",
@@ -862,8 +871,27 @@ async function fetchWikiVariantLabels(
   return labels;
 }
 
-async function fetchCurrentChallengeLeague(): Promise<
-  PoeTradeLeagueEntry | null
+function isExcludedLeagueKey(
+  value: string,
+) {
+  const normalized =
+    value
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, " ")
+      .trim();
+
+  return (
+    normalized === "standard" ||
+    normalized === "hardcore" ||
+    normalized === "ruthless" ||
+    normalized === "hardcore ruthless" ||
+    /^(hc|hardcore)\b/.test(normalized) ||
+    /\b(ssf|ruthless)\b/.test(normalized)
+  );
+}
+
+async function fetchActiveChallengeLeagues(): Promise<
+  PoeTradeLeagueEntry[]
 > {
   const response = await fetch(
     "https://www.pathofexile.com/api/trade2/data/leagues",
@@ -885,46 +913,39 @@ async function fetchCurrentChallengeLeague(): Promise<
     (await response.json()) as PoeTradeLeagueResponse;
 
   console.log(
-    "PoE trade leagues:",
+    "PoE 2 trade leagues:",
     data.result.map((league) => league.id),
   );
 
-  const candidates =
+  const seen = new Set<string>();
+
+  const activeLeagues =
     data.result.filter((league) => {
-      const id =
-        league.id.toLowerCase();
-
       if (
-        id === "standard" ||
-        id === "hardcore" ||
-        id === "ruthless" ||
-        id === "hardcore ruthless"
+        isExcludedLeagueKey(
+          league.id,
+        )
       ) {
         return false;
       }
 
-      if (
-        id.includes("hardcore") ||
-        id.includes("ruthless") ||
-        id.includes("ssf")
-      ) {
+      if (seen.has(league.id)) {
         return false;
       }
 
+      seen.add(league.id);
       return true;
     });
 
-  const detectedLeague =
-    candidates[0] ?? null;
-
   console.log(
-    "Detected challenge league:",
-    detectedLeague?.id ?? "none",
+    "Detected active PoE 2 leagues:",
+    activeLeagues.map(
+      (league) => league.id,
+    ),
   );
 
-  return detectedLeague;
+  return activeLeagues;
 }
-
 async function initializeCollectionProfiles(
   db: Database,
 ): Promise<{
@@ -2171,113 +2192,377 @@ const [
     [collectionProfiles, activeProfileId],
   );
 
-  async function initializeLiveLeague(
-  db: Database,
-  profiles: CollectionProfile[],
-) {
-  try {
-    const detectedLeague =
-      await fetchCurrentChallengeLeague();
+  async function initializeLiveLeagues(
+    db: Database,
+    profiles: CollectionProfile[],
+  ) {
+    try {
+      const detectedLeagues =
+        await fetchActiveChallengeLeagues();
 
-    if (!detectedLeague) {
-      console.warn(
-        "No active PoE challenge league was detected.",
-      );
+      const activeLeagueKeys =
+        new Set(
+          detectedLeagues.map(
+            (league) => league.id,
+          ),
+        );
 
-      return profiles;
-    }
-
-    const currentLeagueRows =
-      await db.select<
-        {
-          name: string;
-          league_key: string | null;
-        }[]
-      >(
-        `
-          SELECT name, league_key
+      const storedRows =
+        await db.select<
+          {
+            id: string;
+            name: string;
+            league_key: string | null;
+            created_at: string;
+          }[]
+        >(`
+          SELECT
+            id,
+            name,
+            league_key,
+            created_at
           FROM collection_profiles
-          WHERE id = ?
-        `,
-        [CURRENT_LEAGUE_PROFILE_ID],
+          WHERE
+            kind = 'challenge'
+            AND is_archived = 0
+          ORDER BY
+            sort_order ASC,
+            created_at ASC
+        `);
+
+      const removableExcludedIds =
+        new Set<string>();
+
+      for (const profile of storedRows) {
+        if (
+          !profile.league_key ||
+          !isExcludedLeagueKey(
+            profile.league_key,
+          )
+        ) {
+          continue;
+        }
+
+        const trackingRows =
+          await db.select<
+            { total: number }[]
+          >(
+            `
+              SELECT COUNT(*) AS total
+              FROM profile_unique_tracking
+              WHERE profile_id = ?
+            `,
+            [profile.id],
+          );
+
+        const trackedCount =
+          Number(
+            trackingRows[0]?.total ?? 0,
+          );
+
+        if (trackedCount > 0) {
+          console.warn(
+            `Excluded league profile ${profile.name} contains tracked data and was kept for safety.`,
+          );
+          continue;
+        }
+
+        await db.execute(
+          `
+            DELETE FROM profile_collection_review
+            WHERE profile_id = ?
+          `,
+          [profile.id],
+        );
+
+        await db.execute(
+          `
+            DELETE FROM collection_profiles
+            WHERE id = ?
+          `,
+          [profile.id],
+        );
+
+        removableExcludedIds.add(
+          profile.id,
+        );
+      }
+
+      const storedProfiles =
+        storedRows.filter(
+          (profile) =>
+            !removableExcludedIds.has(
+              profile.id,
+            ),
+        );
+
+      let nextProfiles =
+        profiles.filter(
+          (profile) =>
+            !removableExcludedIds.has(
+              profile.id,
+            ),
+        );
+
+      /*
+       * Older databases have one special "current-league"
+       * row. If it has never been assigned a live league,
+       * adopt one active league without touching its data.
+       *
+       * Existing databases that already say Runes of Aldur
+       * keep that exact association.
+       */
+      const legacyUnassigned =
+        storedProfiles.find(
+          (profile) =>
+            profile.id ===
+              CURRENT_LEAGUE_PROFILE_ID &&
+            !profile.league_key,
+        );
+
+      if (
+        legacyUnassigned &&
+        detectedLeagues.length > 0
+      ) {
+        const adoptedLeague =
+          detectedLeagues.find(
+            (league) =>
+              league.id ===
+              legacyUnassigned.name,
+          ) ??
+          detectedLeagues[0];
+
+        await db.execute(
+          `
+            UPDATE collection_profiles
+            SET
+              name = ?,
+              league_key = ?
+            WHERE id = ?
+          `,
+          [
+            adoptedLeague.id,
+            adoptedLeague.id,
+            legacyUnassigned.id,
+          ],
+        );
+
+        legacyUnassigned.name =
+          adoptedLeague.id;
+
+        legacyUnassigned.league_key =
+          adoptedLeague.id;
+
+        nextProfiles =
+          nextProfiles.map(
+            (profile) =>
+              profile.id ===
+              legacyUnassigned.id
+                ? {
+                    ...profile,
+                    name:
+                      adoptedLeague.id,
+                  }
+                : profile,
+          );
+      }
+
+      const representedLeagueKeys =
+        new Set(
+          storedProfiles
+            .map(
+              (profile) =>
+                profile.league_key,
+            )
+            .filter(
+              (
+                leagueKey,
+              ): leagueKey is string =>
+                Boolean(leagueKey),
+            ),
+        );
+
+      let nextSortOrder = 10;
+
+      /*
+       * Every newly detected active event/league gets its
+       * own fresh collection. Existing active profiles are
+       * never replaced merely because another league appears.
+       */
+      for (
+        const league of
+        detectedLeagues
+      ) {
+        if (
+          representedLeagueKeys.has(
+            league.id,
+          )
+        ) {
+          continue;
+        }
+
+        const baseProfileId =
+          makeLeagueProfileId(
+            league.id,
+          );
+
+        const existingIdRows =
+          await db.select<
+            { id: string }[]
+          >(
+            `
+              SELECT id
+              FROM collection_profiles
+              WHERE id = ?
+            `,
+            [baseProfileId],
+          );
+
+        const profileId =
+          existingIdRows.length === 0
+            ? baseProfileId
+            : `${baseProfileId}:${Date.now()}:${nextSortOrder}`;
+
+        await db.execute(
+          `
+            INSERT INTO collection_profiles (
+              id,
+              name,
+              kind,
+              league_key,
+              is_archived,
+              sort_order
+            )
+            VALUES (
+              ?,
+              ?,
+              'challenge',
+              ?,
+              0,
+              ?
+            )
+          `,
+          [
+            profileId,
+            league.id,
+            league.id,
+            String(nextSortOrder),
+          ],
+        );
+
+        /*
+         * A new active league starts as a clean collection.
+         * Existing catalogue entries are known Missing,
+         * rather than appearing Unreviewed.
+         */
+        await db.execute(
+          `
+            INSERT OR IGNORE INTO profile_collection_review (
+              profile_id,
+              unique_id,
+              reviewed
+            )
+            SELECT
+              ?,
+              id,
+              1
+            FROM unique_variants
+            WHERE source IN (
+              'poewiki',
+              'built-in-special'
+            )
+          `,
+          [profileId],
+        );
+
+        storedProfiles.push({
+          id: profileId,
+          name: league.id,
+          league_key: league.id,
+          created_at:
+            new Date().toISOString(),
+        });
+
+        representedLeagueKeys.add(
+          league.id,
+        );
+
+        nextProfiles.push({
+          id: profileId,
+          name: league.id,
+          kind: "challenge",
+          isArchived: false,
+        });
+
+        nextSortOrder += 1;
+      }
+
+      /*
+       * A league is considered potentially ended only when
+       * it used to be active locally but no longer appears
+       * in GGG's current active league list.
+       *
+       * We only SHOW a migration prompt here. No collection
+       * data moves until the user confirms it.
+       */
+      const endedProfiles =
+        storedProfiles.filter(
+          (profile) =>
+            profile.league_key !== null &&
+            !activeLeagueKeys.has(
+              profile.league_key,
+            ),
+        );
+
+      if (endedProfiles.length > 0) {
+        const preview =
+          await buildLeagueRolloverPreview(
+            db,
+            endedProfiles[0].id,
+            "Standard",
+          );
+
+        setRolloverPreview(preview);
+        setRolloverMode("pending");
+        setRolloverChangesExpanded(false);
+        setRolloverPreviewOpen(true);
+      }
+
+      return [...nextProfiles].sort(
+        (left, right) => {
+          if (
+            left.kind === "standard" &&
+            right.kind !== "standard"
+          ) {
+            return -1;
+          }
+
+          if (
+            right.kind === "standard" &&
+            left.kind !== "standard"
+          ) {
+            return 1;
+          }
+
+          return left.name.localeCompare(
+            right.name,
+          );
+        },
+      );
+    } catch (error) {
+      console.error(
+        "Could not detect active Path of Exile 2 leagues:",
+        error,
       );
 
-    const currentLeague =
-      currentLeagueRows[0];
-
-    if (!currentLeague) {
+      // League detection is optional. The local collection
+      // still starts normally while offline.
       return profiles;
     }
-
-    /*
-     * Existing installations currently have league_key = NULL
-     * because league detection did not exist yet.
-     *
-     * On the first detection we adopt the live league WITHOUT
-     * clearing or rolling anything over.
-     */
-    if (!currentLeague.league_key) {
-      await db.execute(
-        `
-          UPDATE collection_profiles
-          SET
-            name = ?,
-            league_key = ?
-          WHERE id = ?
-        `,
-        [
-          detectedLeague.id,
-          detectedLeague.id,
-          CURRENT_LEAGUE_PROFILE_ID,
-        ],
-      );
-
-      return profiles.map((profile) =>
-        profile.id ===
-        CURRENT_LEAGUE_PROFILE_ID
-          ? {
-              ...profile,
-              name: detectedLeague.id,
-            }
-          : profile,
-      );
-    }
-
-    /*
-     * A different stored league means a new league has appeared.
-     * DO NOT rollover yet. Phase 2 will handle that safely.
-     */
-    if (
-  currentLeague.league_key !==
-  detectedLeague.id
-) {
-  const preview =
-    await buildLeagueRolloverPreview(
-      db,
-      detectedLeague.id,
-    );
-
-  setRolloverPreview(preview);
-  setRolloverMode("pending");
-  setRolloverChangesExpanded(false);
-  setRolloverPreviewOpen(true);
-}
-
-return profiles;
-  } catch (error) {
-    console.error(
-      "Could not detect current Path of Exile 2 league:",
-      error,
-    );
-
-    // League detection is optional. The local collection
-    // should still start normally while offline.
-    return profiles;
   }
-}
-
 async function buildLeagueRolloverPreview(
   db: Database,
+  profileId: string,
   newLeagueName: string,
 ): Promise<LeagueRolloverPreview> {
   const leagueRows =
@@ -2298,7 +2583,7 @@ async function buildLeagueRolloverPreview(
           ON variants.id = tracking.unique_id
         WHERE tracking.profile_id = ?
       `,
-      [CURRENT_LEAGUE_PROFILE_ID],
+      [profileId],
     );
 
   const standardRows =
@@ -2309,7 +2594,9 @@ async function buildLeagueRolloverPreview(
       }[]
     >(
       `
-        SELECT unique_id, flag
+        SELECT
+          unique_id,
+          flag
         FROM profile_unique_tracking
         WHERE profile_id = ?
       `,
@@ -2320,15 +2607,32 @@ async function buildLeagueRolloverPreview(
     await db.select<
       {
         name: string;
+        league_key: string | null;
+        kind: string;
       }[]
     >(
       `
-        SELECT name
+        SELECT
+          name,
+          league_key,
+          kind
         FROM collection_profiles
         WHERE id = ?
       `,
-      [CURRENT_LEAGUE_PROFILE_ID],
+      [profileId],
     );
+
+  const currentLeague =
+    currentLeagueRows[0];
+
+  if (
+    !currentLeague ||
+    currentLeague.kind !== "challenge"
+  ) {
+    throw new Error(
+      "The league collection could not be found.",
+    );
+  }
 
   const standardFlags =
     new Set(
@@ -2405,14 +2709,16 @@ async function buildLeagueRolloverPreview(
   const changes =
     Array.from(
       changesByUnique.values(),
-    ).sort((a, b) =>
-      a.name.localeCompare(b.name),
+    ).sort((left, right) =>
+      left.name.localeCompare(
+        right.name,
+      ),
     );
 
   return {
+    profileId,
     oldLeagueName:
-      currentLeagueRows[0]?.name ??
-      "Current League",
+      currentLeague.name,
     newLeagueName,
     changedUniques:
       changes.length,
@@ -2420,16 +2726,16 @@ async function buildLeagueRolloverPreview(
     changes,
   };
 }
-
 async function executeLeagueRollover(
   db: Database,
-  newLeagueName: string,
+  profileId: string,
   commitChanges: boolean,
 ): Promise<LeagueRolloverPreview> {
   const preview =
     await buildLeagueRolloverPreview(
       db,
-      newLeagueName,
+      profileId,
+      "Standard",
     );
 
   const currentLeagueRows =
@@ -2437,22 +2743,29 @@ async function executeLeagueRollover(
       {
         name: string;
         league_key: string | null;
+        kind: string;
       }[]
     >(
       `
-        SELECT name, league_key
+        SELECT
+          name,
+          league_key,
+          kind
         FROM collection_profiles
         WHERE id = ?
       `,
-      [CURRENT_LEAGUE_PROFILE_ID],
+      [profileId],
     );
 
   const currentLeague =
     currentLeagueRows[0];
 
-  if (!currentLeague) {
+  if (
+    !currentLeague ||
+    currentLeague.kind !== "challenge"
+  ) {
     throw new Error(
-      "The current league profile could not be found.",
+      "The league collection could not be found.",
     );
   }
 
@@ -2460,79 +2773,13 @@ async function executeLeagueRollover(
     currentLeague.league_key ??
     currentLeague.name;
 
-  const archiveSlug =
-    currentLeague.name
-      .normalize("NFKD")
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, "-")
-      .replace(/^-+|-+$/g, "");
-
   const timestamp = Date.now();
-
-  const archivedProfileId =
-    `archived:${archiveSlug || "league"}:${timestamp}`;
 
   const rolloverId =
     `rollover:${timestamp}`;
 
   const statements:
     SqliteTransactionStatement[] = [
-      {
-        sql: `
-          INSERT INTO collection_profiles (
-            id,
-            name,
-            kind,
-            league_key,
-            is_archived,
-            sort_order
-          )
-          VALUES (?, ?, 'challenge', ?, 1, 100)
-        `,
-        params: [
-          archivedProfileId,
-          currentLeague.name,
-          oldLeagueKey,
-        ],
-      },
-      {
-        sql: `
-          INSERT INTO profile_unique_tracking (
-            profile_id,
-            unique_id,
-            flag
-          )
-          SELECT
-            ?,
-            unique_id,
-            flag
-          FROM profile_unique_tracking
-          WHERE profile_id = ?
-        `,
-        params: [
-          archivedProfileId,
-          CURRENT_LEAGUE_PROFILE_ID,
-        ],
-      },
-      {
-        sql: `
-          INSERT INTO profile_collection_review (
-            profile_id,
-            unique_id,
-            reviewed
-          )
-          SELECT
-            ?,
-            unique_id,
-            reviewed
-          FROM profile_collection_review
-          WHERE profile_id = ?
-        `,
-        params: [
-          archivedProfileId,
-          CURRENT_LEAGUE_PROFILE_ID,
-        ],
-      },
       {
         sql: `
           INSERT OR IGNORE INTO profile_unique_tracking (
@@ -2549,7 +2796,7 @@ async function executeLeagueRollover(
         `,
         params: [
           STANDARD_PROFILE_ID,
-          CURRENT_LEAGUE_PROFILE_ID,
+          profileId,
         ],
       },
       {
@@ -2569,7 +2816,7 @@ async function executeLeagueRollover(
         `,
         params: [
           STANDARD_PROFILE_ID,
-          CURRENT_LEAGUE_PROFILE_ID,
+          profileId,
         ],
       },
       {
@@ -2586,17 +2833,20 @@ async function executeLeagueRollover(
         `,
         params: [
           rolloverId,
-          archivedProfileId,
+          profileId,
           oldLeagueKey,
           currentLeague.name,
-          newLeagueName,
-          newLeagueName,
+          STANDARD_PROFILE_ID,
+          "Standard",
         ],
       },
     ];
 
   for (const change of preview.changes) {
-    for (const flag of change.addedFlags) {
+    for (
+      const flag of
+      change.addedFlags
+    ) {
       statements.push({
         sql: `
           INSERT INTO league_rollover_changes (
@@ -2615,61 +2865,16 @@ async function executeLeagueRollover(
     }
   }
 
-  statements.push(
-    {
-      sql: `
-        DELETE FROM profile_unique_tracking
-        WHERE profile_id = ?
-      `,
-      params: [
-        CURRENT_LEAGUE_PROFILE_ID,
-      ],
-    },
-    {
-      sql: `
-        DELETE FROM profile_collection_review
-        WHERE profile_id = ?
-      `,
-      params: [
-        CURRENT_LEAGUE_PROFILE_ID,
-      ],
-    },
-    {
-      sql: `
-        UPDATE collection_profiles
-        SET
-          name = ?,
-          league_key = ?
-        WHERE id = ?
-      `,
-      params: [
-        newLeagueName,
-        newLeagueName,
-        CURRENT_LEAGUE_PROFILE_ID,
-      ],
-    },
-    {
-      sql: `
-        INSERT OR IGNORE INTO profile_collection_review (
-          profile_id,
-          unique_id,
-          reviewed
-        )
-        SELECT
-          ?,
-          id,
-          1
-        FROM unique_variants
-        WHERE source IN (
-          'poewiki',
-          'built-in-special'
-        )
-      `,
-      params: [
-        CURRENT_LEAGUE_PROFILE_ID,
-      ],
-    },
-  );
+  statements.push({
+    sql: `
+      UPDATE collection_profiles
+      SET
+        is_archived = 1,
+        sort_order = 100
+      WHERE id = ?
+    `,
+    params: [profileId],
+  });
 
   await invoke(
     "execute_sqlite_transaction",
@@ -2681,7 +2886,6 @@ async function executeLeagueRollover(
 
   return preview;
 }
-
 async function previewLeagueRollover() {
   if (!database) {
     return;
@@ -2690,10 +2894,31 @@ async function previewLeagueRollover() {
   try {
     setAppError("");
 
+    const testProfile =
+      collectionProfiles.find(
+        (profile) =>
+          profile.id ===
+            activeProfileId &&
+          profile.kind ===
+            "challenge",
+      ) ??
+      collectionProfiles.find(
+        (profile) =>
+          profile.kind ===
+          "challenge",
+      );
+
+    if (!testProfile) {
+      throw new Error(
+        "No active league profile is available for the rollover test.",
+      );
+    }
+
     const preview =
       await buildLeagueRolloverPreview(
         database,
-        "DEV TEST LEAGUE",
+        testProfile.id,
+        "Standard",
       );
 
     setRolloverPreview(preview);
@@ -2712,7 +2937,7 @@ async function previewLeagueRollover() {
     }
   } catch (error) {
     console.error(
-      "Could not simulate new league detection:",
+      "Could not simulate league ending:",
       error,
     );
 
@@ -2740,7 +2965,7 @@ async function confirmDevLeagueRollover() {
     const completed =
       await executeLeagueRollover(
         database,
-        rolloverPreview.newLeagueName,
+        rolloverPreview.profileId,
         false,
       );
 
@@ -2749,7 +2974,7 @@ async function confirmDevLeagueRollover() {
     setRolloverChangesExpanded(false);
   } catch (error) {
     console.error(
-      "Could not test league rollover:",
+      "Could not test league migration:",
       error,
     );
 
@@ -2779,27 +3004,51 @@ async function confirmLeagueRollover() {
     const completed =
       await executeLeagueRollover(
         database,
-        rolloverPreview.newLeagueName,
+        rolloverPreview.profileId,
         true,
       );
 
+    const archivedWasActive =
+      activeProfileId ===
+      completed.profileId;
+
+    const nextActiveProfileId =
+      archivedWasActive
+        ? STANDARD_PROFILE_ID
+        : activeProfileId;
+
     setCollectionProfiles(
       (current) =>
-        current.map((profile) =>
-          profile.id ===
-          CURRENT_LEAGUE_PROFILE_ID
-            ? {
-                ...profile,
-                name:
-                  completed.newLeagueName,
-              }
-            : profile,
+        current.filter(
+          (profile) =>
+            profile.id !==
+            completed.profileId,
         ),
     );
 
+    if (archivedWasActive) {
+      await database.execute(
+        `
+          INSERT OR REPLACE INTO app_meta (
+            key,
+            value
+          )
+          VALUES (
+            'active_collection_profile',
+            ?
+          )
+        `,
+        [STANDARD_PROFILE_ID],
+      );
+
+      setActiveProfileId(
+        STANDARD_PROFILE_ID,
+      );
+    }
+
     await loadCollectionData(
       database,
-      activeProfileId,
+      nextActiveProfileId,
     );
 
     setRolloverPreview(completed);
@@ -2807,7 +3056,7 @@ async function confirmLeagueRollover() {
     setRolloverChangesExpanded(false);
   } catch (error) {
     console.error(
-      "Could not complete league rollover:",
+      "Could not complete league migration:",
       error,
     );
 
@@ -2820,7 +3069,6 @@ async function confirmLeagueRollover() {
     setRolloverApplying(false);
   }
 }
-
 async function loadImportReconciliationSummary(
   db: Database,
 ): Promise<ImportReconciliationSummary> {
@@ -4183,7 +4431,7 @@ setActiveProfileId(
         setDatabase(db);
         setDatabaseReady(true);
 
-        void initializeLiveLeague(
+        void initializeLiveLeagues(
   db,
   profileState.profiles,
 ).then((liveProfiles) => {
@@ -6101,7 +6349,7 @@ try {
         setRolloverPreviewOpen(true);
       }}
     >
-      âš  {rolloverPreview.newLeagueName} available
+      âš  {rolloverPreview.oldLeagueName} appears to have ended
       {" â€” "}
       Review
     </button>
@@ -6420,24 +6668,24 @@ editionSources={
               : rolloverMode === "dev-complete"
                 ? "DEV ROLLOVER TEST PASSED"
                 : rolloverMode === "pending"
-                  ? "NEW LEAGUE AVAILABLE"
+                  ? "LEAGUE ENDED"
                   : "LEAGUE ROLLOVER COMPLETE"}
           </span>
 
           <h2>
             {rolloverPreview.oldLeagueName}
-            {" â†’ "}
+            {" \u2192 "}
             {rolloverPreview.newLeagueName}
           </h2>
 
           <p>
             {rolloverMode === "dev-pending"
-              ? "Development simulation. This behaves like a real new-league prompt, but starting the test league will roll every database change back."
+              ? "Development simulation. This tests archiving one league and merging its tracked collection into Standard, then rolls every database change back."
               : rolloverMode === "dev-complete"
                 ? "The complete rollover transaction succeeded and was rolled back. No collection data was changed."
                 : rolloverMode === "pending"
-                  ? `${rolloverPreview.oldLeagueName} has ended. Your collection can be archived and merged into Standard before starting ${rolloverPreview.newLeagueName}.`
-                  : `${rolloverPreview.oldLeagueName} has been archived and merged into Standard. ${rolloverPreview.newLeagueName} is ready as a fresh collection.`}
+                  ? `${rolloverPreview.oldLeagueName} no longer appears in the active league list. Its tracked collection can now be archived and merged into Standard.`
+                  : `${rolloverPreview.oldLeagueName} has been archived and merged into Standard. Other active league collections were left untouched.`}
           </p>
         </div>
 
@@ -6471,13 +6719,7 @@ editionSources={
           </div>
         </div>
 
-        <p className="catalogue-update-note">
-          Foulborn added:{" "}
-          {rolloverPreview.flagCounts.foulborn}
-          {" â€¢ "}
-          Vestigial added:{" "}
-          {rolloverPreview.flagCounts.vestigial}
-        </p>
+
 
         {rolloverChangesExpanded &&
           rolloverPreview.changes.length > 0 && (
@@ -6550,8 +6792,8 @@ editionSources={
               }
             >
               {rolloverApplying
-                ? "Starting New League..."
-                : `Start ${rolloverPreview.newLeagueName}`}
+                ? "Migrating League..."
+                : "Merge into Standard"}
             </button>
           ) : rolloverMode ===
             "dev-pending" ? (
