@@ -17,7 +17,7 @@
   "identifier": "http:default",
   "allow": [
     {
-      "url": "https://www.poewiki.net/**"
+      "url": "https://www.poe2wiki.net/**"
     },
     {
       "url": "https://www.pathofexile.com/**"
