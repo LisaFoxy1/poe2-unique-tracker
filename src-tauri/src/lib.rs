@@ -115,10 +115,10 @@ async fn execute_sqlite_transaction(
         .path()
         .app_config_dir()
         .map_err(|error| error.to_string())?
-        .join("poe-collector.db");
+        .join("poe2-collector.db");
 
     if !database_path.exists() {
-        return Err("PoE Collector database could not be found.".to_string());
+        return Err("PoE 2 Collector database could not be found.".to_string());
     }
 
     let options = SqliteConnectOptions::new()
@@ -171,7 +171,7 @@ pub fn run() {
 
     #[cfg(desktop)]
     {
-        // Keep PoE Collector to a single running instance. This avoids
+        // Keep PoE 2 Collector to a single running instance. This avoids
         // duplicate SQLite writers and duplicate global-hotkey registration.
         builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             if let Some(window) = app.get_webview_window("main") {
@@ -213,10 +213,10 @@ pub fn run() {
         TrayIconBuilder::new()
             .icon(
                 app.default_window_icon()
-                    .expect("PoE Collector icon is missing")
+                    .expect("PoE 2 Collector icon is missing")
                     .clone(),
             )
-            .tooltip("PoE Collector")
+            .tooltip("PoE 2 Collector")
             .menu(&tray_menu)
             .show_menu_on_left_click(false)
             .on_menu_event(|app, event| match event.id.as_ref() {

@@ -4273,7 +4273,7 @@ useEffect(() => {
   useEffect(() => {
     async function initializeDatabase() {
       try {
-        const db = await Database.load("sqlite:poe-collector.db");
+        const db = await Database.load("sqlite:poe2-collector.db");
 
         await ensureEditionAvailabilitySchema(
   db,

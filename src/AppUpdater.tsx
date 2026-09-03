@@ -7,7 +7,7 @@ import {
 } from "@tauri-apps/plugin-updater";
 
 const PENDING_UPDATE_KEY =
-  "poe-collector-pending-update";
+  "poe2-collector-pending-update";
 
 type UpdateNotice = {
   version: string;
