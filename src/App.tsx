@@ -281,7 +281,7 @@ function normalizeImportItemType(sheetName: string) {
 function normalizeImportName(value: string) {
   return value
     .normalize("NFKC")
-    .replace(/[’‘]/g, "'")
+    .replace(/[â€™â€˜]/g, "'")
     .replace(/[^a-zA-Z0-9]+/g, " ")
     .replace(/\s+/g, " ")
     .trim()
@@ -1488,7 +1488,7 @@ if (!payload) {
           aria-label="Close overlay"
           onClick={hideOverlayManually}
         >
-          ×
+          Ã—
         </button>
       </div>
 
@@ -1530,7 +1530,7 @@ if (!payload) {
 
   const statusHeading =
     editionLabel
-      ? `STANDARD • ${editionLabel} EDITION`
+      ? `STANDARD â€¢ ${editionLabel} EDITION`
       : "STANDARD COLLECTION";
 
   const statusValue =
@@ -1717,7 +1717,7 @@ const hasUncertainEdition =
           aria-label="Close overlay"
           onClick={hideOverlayManually}
         >
-          ×
+          Ã—
         </button>
       </div>
 
@@ -3330,7 +3330,7 @@ const isLegacyOnly =
 
       const checkedTime = new Date(result.checkedAt).toLocaleString();
       setCatalogueCheckMessage(
-        `Last checked ${checkedTime} • ${result.remoteItems.toLocaleString()} catalogue entries received.`,
+        `Last checked ${checkedTime} â€¢ ${result.remoteItems.toLocaleString()} catalogue entries received.`,
       );
 
       if (result.hasVisibleChanges) {
@@ -3718,7 +3718,7 @@ function captureLookupHotkey(
 
   if (!key) {
     setHotkeySettingMessage(
-      "Use a letter, number, or F1–F12 as the main key.",
+      "Use a letter, number, or F1â€“F12 as the main key.",
     );
     return;
   }
@@ -4815,7 +4815,7 @@ try {
         const editionText =
           result.edition === "normal"
             ? ""
-            : ` • ${result.edition}`;
+            : ` â€¢ ${result.edition}`;
 
         setHotkeyMessage(
           `Matched ${result.name}${editionText}.`,
@@ -6101,8 +6101,8 @@ try {
         setRolloverPreviewOpen(true);
       }}
     >
-      ⚠ {rolloverPreview.newLeagueName} available
-      {" — "}
+      âš  {rolloverPreview.newLeagueName} available
+      {" â€” "}
       Review
     </button>
   )}
@@ -6190,7 +6190,7 @@ try {
         title="Clear search"
         onClick={() => setSearchTerm("")}
       >
-        ×
+        Ã—
       </button>
     )}
   </div>
@@ -6206,8 +6206,8 @@ try {
                   handleSortModeChange(event.target.value as SortMode)
                 }
               >
-                <option value="alphabetical">All A–Z</option>
-                <option value="type">By Type → A–Z</option>
+                <option value="alphabetical">All Aâ€“Z</option>
+                <option value="type">By Type â†’ Aâ€“Z</option>
               </select>
             </div>
 
@@ -6297,7 +6297,7 @@ try {
                             <span className="unique-variant-meta">
                               {[unique.baseType, unique.variantLabel]
                                 .filter(Boolean)
-                                .join(" • ")}
+                                .join(" â€¢ ")}
                             </span>
                           )}
                         </span>
@@ -6357,7 +6357,7 @@ editionSources={
                               <span className="unique-variant-meta">
                                 {[unique.baseType, unique.variantLabel]
                                   .filter(Boolean)
-                                  .join(" • ")}
+                                  .join(" â€¢ ")}
                               </span>
                             )}
                           </span>
@@ -6416,7 +6416,7 @@ editionSources={
         <div className="catalogue-update-heading">
           <span className="catalogue-update-kicker">
             {rolloverMode === "dev-pending"
-              ? "DEV NEW LEAGUE TEST"
+              ? "DEV LEAGUE ROLLOVER TEST"
               : rolloverMode === "dev-complete"
                 ? "DEV ROLLOVER TEST PASSED"
                 : rolloverMode === "pending"
@@ -6426,7 +6426,7 @@ editionSources={
 
           <h2>
             {rolloverPreview.oldLeagueName}
-            {" → "}
+            {" â†’ "}
             {rolloverPreview.newLeagueName}
           </h2>
 
@@ -6474,7 +6474,7 @@ editionSources={
         <p className="catalogue-update-note">
           Foulborn added:{" "}
           {rolloverPreview.flagCounts.foulborn}
-          {" • "}
+          {" â€¢ "}
           Vestigial added:{" "}
           {rolloverPreview.flagCounts.vestigial}
         </p>
@@ -6496,7 +6496,7 @@ editionSources={
                     <strong>
                       {change.name}
                     </strong>
-                    {" — "}
+                    {" â€” "}
                     {change.addedFlags
                       .map(
                         (flag) =>
@@ -6565,7 +6565,7 @@ editionSources={
             >
               {rolloverApplying
                 ? "Testing Rollover..."
-                : `Test Start ${rolloverPreview.newLeagueName}`}
+                : "Run Rollover Test"}
             </button>
           ) : (
             <button
@@ -6820,9 +6820,9 @@ editionSources={
                                 >
                                   <strong>{item.name}</strong>
                                   {item.variantLabel
-                                    ? ` — ${item.variantLabel}`
+                                    ? ` â€” ${item.variantLabel}`
                                     : ""}
-                                  {" • "}
+                                  {" â€¢ "}
                                   {item.itemType}
                                 </p>
                               ),
@@ -6962,9 +6962,9 @@ editionSources={
                           >
                             <strong>{item.name}</strong>
                             {item.variantLabel
-                              ? ` — ${item.variantLabel}`
+                              ? ` â€” ${item.variantLabel}`
                               : ""}
-                            {" • "}
+                            {" â€¢ "}
                             {item.itemType}
                           </p>
                         ),
@@ -7049,7 +7049,7 @@ editionSources={
                 type="button"
                 onClick={() => setSettingsOpen(false)}
               >
-                ×
+                Ã—
               </button>
             </div>
 
@@ -7482,7 +7482,7 @@ Perching Staff
                           parserTestResult.variantLabel,
                         ]
                           .filter(Boolean)
-                          .join(" • ") || parserTestResult.itemType}
+                          .join(" â€¢ ") || parserTestResult.itemType}
                       </small>
                       <small>
                         Edition:{" "}
@@ -7584,7 +7584,7 @@ Perching Staff
                                   candidate.variantLabel,
                                 ]
                                   .filter(Boolean)
-                                  .join(" • "),
+                                  .join(" â€¢ "),
                               )
                               .join(" | ")}
                           </small>
