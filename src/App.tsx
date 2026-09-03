@@ -1163,9 +1163,19 @@ await db.execute(`
 }
 
 async function seedBuiltInSpecialVariants(db: Database) {
-  // PoE 1 had hand-written special variants such as Ralakesh's
-  // Impatience. PoE 2 starts with no built-in special rules.
-  void db;
+  // PoE 2 currently has no hand-written special variant rules,
+  // but the parser still expects this table to exist.
+  await db.execute(`
+    CREATE TABLE IF NOT EXISTS unique_variant_rules (
+      id TEXT PRIMARY KEY NOT NULL,
+      variant_id TEXT NOT NULL,
+      match_type TEXT NOT NULL,
+      match_text TEXT NOT NULL,
+      priority INTEGER NOT NULL DEFAULT 100,
+      source TEXT NOT NULL DEFAULT 'built-in'
+    )
+  `);
+
   return 0;
 }
 
