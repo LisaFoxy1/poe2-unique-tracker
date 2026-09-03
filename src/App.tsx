@@ -189,50 +189,72 @@ const STANDARD_PROFILE_ID = "standard";
 const CURRENT_LEAGUE_PROFILE_ID = "current-league";
 
 const IMPORT_SHEET_TYPES: Record<string, string> = {
-  amulet: "Amulet",
-  amulets: "Amulet",
-  axe: "Axe",
-  axes: "Axe",
-  belt: "Belt",
-  belts: "Belt",
-  "body armour": "Body Armour",
-  "body armours": "Body Armour",
-  boot: "Boots",
-  boots: "Boots",
-  bow: "Bow",
-  bows: "Bow",
-  claw: "Claw",
-  claws: "Claw",
-  contract: "Contract",
-  contracts: "Contract",
-  dagger: "Dagger",
-  daggers: "Dagger",
   flask: "Flask",
   flasks: "Flask",
-  glove: "Gloves",
-  gloves: "Gloves",
-  helmet: "Helmet",
-  helmets: "Helmet",
-  jewel: "Jewel",
-  jewels: "Jewel",
-  mace: "Mace",
-  maces: "Mace",
-  map: "Map",
-  maps: "Map",
-  quiver: "Quiver",
-  quivers: "Quiver",
+  amulet: "Amulet",
+  amulets: "Amulet",
   ring: "Ring",
   rings: "Ring",
-  shield: "Shield",
-  shields: "Shield",
-  staff: "Staff",
-  staves: "Staff",
-  sword: "Sword",
-  swords: "Sword",
-  tincture: "Tincture",
-  tinctures: "Tincture",
   wand: "Wand",
   wands: "Wand",
+  mace: "Mace",
+  maces: "Mace",
+  "one hand mace": "Mace",
+  "one hand maces": "Mace",
+  "two hand mace": "Mace",
+  "two hand maces": "Mace",
+  bow: "Bow",
+  bows: "Bow",
+  staff: "Staff",
+  staves: "Staff",
+  quiver: "Quiver",
+  quivers: "Quiver",
+  belt: "Belt",
+  belts: "Belt",
+  glove: "Gloves",
+  gloves: "Gloves",
+  boot: "Boots",
+  boots: "Boots",
+  "body armour": "Body Armour",
+  "body armours": "Body Armour",
+  helmet: "Helmet",
+  helmets: "Helmet",
+  shield: "Shield",
+  shields: "Shield",
+  buckler: "Shield",
+  bucklers: "Shield",
+  targe: "Shield",
+  targes: "Shield",
+  jewel: "Jewel",
+  jewels: "Jewel",
+  charm: "Charm",
+  charms: "Charm",
+  crossbow: "Crossbow",
+  crossbows: "Crossbow",
+  focus: "Focus",
+  foci: "Focus",
+  sceptre: "Sceptre",
+  sceptres: "Sceptre",
+  spear: "Spear",
+  spears: "Spear",
+  quarterstaff: "Quarterstaff",
+  quarterstaves: "Quarterstaff",
+  talisman: "Talisman",
+  talismans: "Talisman",
+  flail: "Flail",
+  flails: "Flail",
+  sword: "Sword",
+  swords: "Sword",
+  axe: "Axe",
+  axes: "Axe",
+  dagger: "Dagger",
+  daggers: "Dagger",
+  waystone: "Waystone",
+  waystones: "Waystone",
+  tablet: "Tablet",
+  tablets: "Tablet",
+  relic: "Relic",
+  relics: "Relic",
 };
 
 const IMPORT_NAME_ALIASES = new Map([
@@ -418,8 +440,8 @@ const DEFAULT_COLLECTION_RULES: CollectionRules = {
 
 const DEFAULT_EXTRA_TRACKING: ExtraTracking = {
   foil: true,
-  foulborn: true,
-  vestigial: true,
+  foulborn: false,
+  vestigial: false,
 };
 
 const EXTRA_VARIANTS: ExtraVariant[] = [
@@ -430,8 +452,8 @@ const EXTRA_VARIANTS: ExtraVariant[] = [
 
 const DEFAULT_EDITION_AVAILABILITY: EditionAvailabilityMap = {
   foil: "unknown",
-  foulborn: "unknown",
-  vestigial: "unknown",
+  foulborn: "unavailable",
+  vestigial: "unavailable",
 };
 
 const DEFAULT_EDITION_SOURCES: EditionSourceMap = {
@@ -445,6 +467,7 @@ const CONFIDENT_EDITION_SOURCES = new Set([
   "poewiki-foulborn-category",
   "poewiki-foil-confirmed",
   "built-in-vestigial-class-rule",
+  "poe2-reliquary-general",
 ]);
 
 function isExtraVariant(
@@ -639,144 +662,10 @@ function getCuratedVariantLabel(
   itemName: string,
   wikiLabel: string | null,
 ) {
-  const label =
-    wikiLabel?.trim() ?? "";
-
-  const normalizedLabel =
-    label.toLowerCase();
-
-  /*
-   * Old Synthesis-era uniques have a current
-   * Synthesised form and a historical Fractured form.
-   */
-  if (
-    SYNTHESIS_VARIANT_FAMILIES.has(
-      itemName,
-    )
-  ) {
-    if (
-      normalizedLabel ===
-      "fractured"
-    ) {
-      return "Fractured — Legacy";
-    }
-
-    if (!label) {
-      return "Synthesised";
-    }
-  }
-
-  if (
-    itemName ===
-    "Cane of Kulemak"
-  ) {
-    if (
-      normalizedLabel ===
-      "variant 1"
-    ) {
-      return "3 Veiled — Catarina Prefix + Generic Prefix + Suffix";
-    }
-
-    if (
-      normalizedLabel ===
-      "variant 2"
-    ) {
-      return "3 Veiled — Catarina Prefix + 2 Suffixes";
-    }
-
-    if (
-      normalizedLabel ===
-      "variant 3"
-    ) {
-      return "4 Veiled — 2 Catarina Prefixes + 2 Suffixes";
-    }
-  }
-
-  if (itemName === "Impresence") {
-    const match =
-      /^(chaos|cold|fire|lightning|physical)(,\s*full power)?$/i.exec(
-        label,
-      );
-
-    if (match) {
-      const damageType =
-        match[1]
-          .charAt(0)
-          .toUpperCase() +
-        match[1].slice(1);
-
-      return match[2]
-        ? `${damageType} — Uber Uber Elder — 2 Curses`
-        : `${damageType} — Elder — 1 Curse`;
-    }
-  }
-
-  if (
-    itemName ===
-    "Storm's Gift"
-  ) {
-    if (!label) {
-      return "Current — Non-Synthesised";
-    }
-
-    if (
-      normalizedLabel ===
-      "synthesised"
-    ) {
-      return "Synthesised — Legacy";
-    }
-
-    if (
-      normalizedLabel ===
-      "fractured"
-    ) {
-      return "Fractured — Legacy";
-    }
-  }
-
-  if (
-    itemName ===
-    "The Iron Fortress"
-  ) {
-    if (!label) {
-      return "Current";
-    }
-
-    if (
-      normalizedLabel === "fated"
-    ) {
-      return "Fated — Legacy";
-    }
-  }
-
-  if (
-    itemName ===
-    "Thread of Hope"
-  ) {
-    if (!label) {
-      return "Variable Ring — Small / Medium / Large / Very Large";
-    }
-
-    if (
-      normalizedLabel ===
-      "massive ring"
-    ) {
-      return "Massive Ring — Uber Sirus";
-    }
-  }
-
-  if (itemName === "Winterweave") {
-    if (!label) {
-      return "Current";
-    }
-
-    if (
-      normalizedLabel === "fated"
-    ) {
-      return "Fated — Legacy";
-    }
-  }
-
+  // PoE 1 had several hand-curated name-specific rules.
+  // PoE 2 uses the Wiki label directly.
+  void itemName;
+  void SYNTHESIS_VARIANT_FAMILIES;
   return wikiLabel;
 }
 
@@ -784,49 +673,10 @@ function isCuratedLegacyVariant(
   itemName: string,
   variantLabel: string | null,
 ) {
-  const label =
-    variantLabel
-      ?.trim()
-      .toLowerCase() ?? "";
-
-  /*
-   * This also catches our already-curated
-   * "... — Legacy" labels on later offline starts.
-   */
-  if (label.includes("legacy")) {
-    return true;
-  }
-
-  if (
-    SYNTHESIS_VARIANT_FAMILIES.has(
-      itemName,
-    ) &&
-    label === "fractured"
-  ) {
-    return true;
-  }
-
-  if (
-    itemName === "Storm's Gift" &&
-    (
-      label === "fractured" ||
-      label === "synthesised"
-    )
-  ) {
-    return true;
-  }
-
-  if (
-    (
-      itemName ===
-        "The Iron Fortress" ||
-      itemName === "Winterweave"
-    ) &&
-    label === "fated"
-  ) {
-    return true;
-  }
-
+  // Legacy state for PoE 2 comes from catalogue metadata rather
+  // than PoE 1-specific hand-written item rules.
+  void itemName;
+  void variantLabel;
   return false;
 }
 
@@ -922,7 +772,7 @@ async function fetchWikiVariantLabels(
     try {
       const response =
         await fetch(
-          `https://www.poewiki.net/w/api.php?${params.toString()}`,
+          `https://www.poe2wiki.net/w/api.php?${params.toString()}`,
           {
             method: "GET",
             headers: {
@@ -1020,11 +870,11 @@ async function fetchCurrentChallengeLeague(): Promise<
   PoeTradeLeagueEntry | null
 > {
   const response = await fetch(
-    "https://www.pathofexile.com/api/trade/data/leagues",
+    "https://www.pathofexile.com/api/trade2/data/leagues",
     {
       headers: {
         Accept: "application/json",
-        "User-Agent": "PoE-Collector/0.1.0",
+        "User-Agent": "PoE2-Collector/0.1.0",
       },
     },
   );
@@ -1313,224 +1163,10 @@ await db.execute(`
 }
 
 async function seedBuiltInSpecialVariants(db: Database) {
-  await db.execute(`
-    CREATE TABLE IF NOT EXISTS unique_variant_rules (
-      id TEXT PRIMARY KEY NOT NULL,
-      variant_id TEXT NOT NULL,
-      match_type TEXT NOT NULL,
-      match_text TEXT NOT NULL,
-      priority INTEGER NOT NULL DEFAULT 100,
-      source TEXT NOT NULL DEFAULT 'built-in'
-    )
-  `);
-
-  const seedState = await db.select<{ value: string }[]>(`
-    SELECT value
-    FROM app_meta
-    WHERE key = 'special_variant_rules_seeded_v3'
-  `);
-
-  if (seedState.length > 0) {
-    return 0;
-  }
-
-  const familyId = makeFamilyId("Ralakesh's Impatience");
-
-  await db.execute(
-    `
-      INSERT OR IGNORE INTO unique_families (
-        id,
-        name,
-        item_type,
-        stash_slot_key,
-        source
-      )
-      VALUES (?, ?, 'Boots', ?, 'built-in-special')
-    `,
-    [
-      familyId,
-      "Ralakesh's Impatience",
-      "ralakesh's impatience",
-    ],
-  );
-
-  // Keep any collection state that came from the old spreadsheet/live
-  // catalogue, but make it explicit that we do not know which of the three
-  // modern Ralakesh variants that old row represents.
-  await db.execute(
-    `
-      UPDATE unique_variants
-      SET variant_label = 'Imported copy — variant unknown'
-      WHERE
-        family_id = ?
-        AND name = ?
-        AND variant_label IS NULL
-        AND source != 'built-in-special'
-    `,
-    [familyId, "Ralakesh's Impatience"],
-  );
-
-  const variants = [
-    {
-      id: "special:ralakesh-impatience:legacy-pre-3-19",
-      label: "Legacy — Pre-3.19 Stationary Charge Generation",
-      matchType: "contains-all",
-      matchText: [
-        "Count as having maximum number of Endurance Charges",
-        "Count as having maximum number of Frenzy Charges",
-        "Count as having maximum number of Power Charges",
-        "Gain a Frenzy, Endurance, or Power Charge once per second while you are Stationary",
-      ].join("|||"),
-      priority: 300,
-      releaseVersion: "3.1.0",
-      dropEnabled: 0,
-      isLegacyOnly: 1,
-      removalVersion: "3.19.0",
-    },
-    {
-      id: "special:ralakesh-impatience:legacy-all-charges",
-      label: "Legacy — All Three Charges (pre-3.26)",
-      matchType: "contains-all",
-      matchText: [
-        "Count as having maximum number of Endurance Charges",
-        "Count as having maximum number of Frenzy Charges",
-        "Count as having maximum number of Power Charges",
-      ].join("|||"),
-      priority: 200,
-      releaseVersion: "3.23.0",
-      dropEnabled: 0,
-      isLegacyOnly: 1,
-      removalVersion: "3.26.0",
-    },
-    {
-      id: "special:ralakesh-impatience:endurance",
-      label: "Endurance Charge variant",
-      matchType: "contains",
-      matchText:
-        "Count as having maximum number of Endurance Charges",
-      priority: 100,
-      releaseVersion: "3.26.0",
-      dropEnabled: 1,
-      isLegacyOnly: 0,
-      removalVersion: null,
-    },
-    {
-      id: "special:ralakesh-impatience:frenzy",
-      label: "Frenzy Charge variant",
-      matchType: "contains",
-      matchText:
-        "Count as having maximum number of Frenzy Charges",
-      priority: 100,
-      releaseVersion: "3.26.0",
-      dropEnabled: 1,
-      isLegacyOnly: 0,
-      removalVersion: null,
-    },
-    {
-      id: "special:ralakesh-impatience:power",
-      label: "Power Charge variant",
-      matchType: "contains",
-      matchText:
-        "Count as having maximum number of Power Charges",
-      priority: 100,
-      releaseVersion: "3.26.0",
-      dropEnabled: 1,
-      isLegacyOnly: 0,
-      removalVersion: null,
-    },
-  ] as const;
-
-  let added = 0;
-
-  for (const variant of variants) {
-    const existing = await db.select<{ id: string }[]>(
-      `
-        SELECT id
-        FROM unique_variants
-        WHERE id = ?
-      `,
-      [variant.id],
-    );
-
-    if (existing.length === 0) {
-      added += 1;
-    }
-
-    await db.execute(
-      `
-        INSERT OR IGNORE INTO unique_variants (
-          id,
-          family_id,
-          name,
-          base_type,
-          item_type,
-          variant_label,
-          release_version,
-          drop_enabled,
-          drop_restricted,
-          is_replica,
-          has_legacy_variants,
-          is_legacy_only,
-          removal_version,
-          source
-        )
-        VALUES (
-          ?,
-          ?,
-          ?,
-          'Riveted Boots',
-          'Boots',
-          ?,
-          ?,
-          ?,
-          0,
-          0,
-          1,
-          ?,
-          ?,
-          'built-in-special'
-        )
-      `,
-      [
-        variant.id,
-        familyId,
-        "Ralakesh's Impatience",
-        variant.label,
-        variant.releaseVersion,
-        variant.dropEnabled,
-        variant.isLegacyOnly,
-        variant.removalVersion,
-      ],
-    );
-
-    await db.execute(
-      `
-        INSERT OR REPLACE INTO unique_variant_rules (
-          id,
-          variant_id,
-          match_type,
-          match_text,
-          priority,
-          source
-        )
-        VALUES (?, ?, ?, ?, ?, 'built-in-special')
-      `,
-      [
-        `rule:${variant.id}`,
-        variant.id,
-        variant.matchType,
-        variant.matchText,
-        variant.priority,
-      ],
-    );
-  }
-
-  await db.execute(`
-    INSERT OR REPLACE INTO app_meta (key, value)
-    VALUES ('special_variant_rules_seeded_v3', 'yes')
-  `);
-
-  return added;
+  // PoE 1 had hand-written special variants such as Ralakesh's
+  // Impatience. PoE 2 starts with no built-in special rules.
+  void db;
+  return 0;
 }
 
 const DEFAULT_POE_LOOKUP_HOTKEY =

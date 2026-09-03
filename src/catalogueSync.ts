@@ -138,7 +138,7 @@ type VariantRow = {
   source: string;
 };
 
-const POE_WIKI_API = "https://www.poewiki.net/w/api.php";
+const POE_WIKI_API = "https://www.poe2wiki.net/w/api.php";
 const PAGE_SIZE = 500;
 const CHECK_META_KEY = "last_catalogue_check_at";
 const REVISION_META_KEY = "live_catalogue_revision";
@@ -148,26 +148,12 @@ const FOULBORN_CATEGORY =
   "Category:Unique items with Foulborn variants";
 
 const VOIDBORN_FOIL_LIST_PAGE =
-  "List of Voidborn foil unique items";
+  "Reliquary Vault";
 
 const VALDO_FOIL_LIST_PAGE =
-  "List of Valdo's Puzzle Box foil maps";
+  "Twilight Reliquary Key";
 
-  const FOIL_RELIQUARY_PAGES = [
-  "Ancient Reliquary",
-  "Timeworn Reliquary",
-  "Vaal Reliquary",
-  "Forgotten Reliquary",
-  "Visceral Reliquary",
-  "Archive Reliquary",
-  "Shiny Reliquary",
-  "Oubliette Reliquary",
-  "Cosmic Reliquary",
-  "Decaying Reliquary",
-  "Lonely Reliquary",
-  "Traumatic Reliquary",
-  "Reverent Reliquary",
-] as const;
+const FOIL_RELIQUARY_PAGES = [] as const;
 
 /*
  * Some Reliquary pages mention a unique specifically
@@ -196,12 +182,12 @@ const COLLECTIBLE_EDITIONS: CollectibleEdition[] = [
 
 const CLASS_TO_TRACKER_TYPE: Record<string, string> = {
   // Flasks
+  Flask: "Flask",
+  Flasks: "Flask",
   "Life Flask": "Flask",
   "Life Flasks": "Flask",
   "Mana Flask": "Flask",
   "Mana Flasks": "Flask",
-  "Hybrid Flask": "Flask",
-  "Hybrid Flasks": "Flask",
   "Utility Flask": "Flask",
   "Utility Flasks": "Flask",
 
@@ -214,38 +200,38 @@ const CLASS_TO_TRACKER_TYPE: Record<string, string> = {
   Belts: "Belt",
 
   // Weapons
-  Claw: "Claw",
-  Claws: "Claw",
-  Dagger: "Dagger",
-  Daggers: "Dagger",
-  "Rune Dagger": "Dagger",
-  "Rune Daggers": "Dagger",
   Wand: "Wand",
   Wands: "Wand",
-  "One Hand Sword": "Sword",
-  "One Hand Swords": "Sword",
-  "Thrusting One Hand Sword": "Sword",
-  "Thrusting One Hand Swords": "Sword",
-  "Two Hand Sword": "Sword",
-  "Two Hand Swords": "Sword",
-  "One Hand Axe": "Axe",
-  "One Hand Axes": "Axe",
-  "Two Hand Axe": "Axe",
-  "Two Hand Axes": "Axe",
+  Mace: "Mace",
+  Maces: "Mace",
   "One Hand Mace": "Mace",
   "One Hand Maces": "Mace",
-  Sceptre: "Mace",
-  Sceptres: "Mace",
   "Two Hand Mace": "Mace",
   "Two Hand Maces": "Mace",
   Bow: "Bow",
   Bows: "Bow",
   Staff: "Staff",
   Staves: "Staff",
-  Warstaff: "Staff",
-  Warstaves: "Staff",
   Quiver: "Quiver",
   Quivers: "Quiver",
+  Crossbow: "Crossbow",
+  Crossbows: "Crossbow",
+  Sceptre: "Sceptre",
+  Sceptres: "Sceptre",
+  Spear: "Spear",
+  Spears: "Spear",
+  Quarterstaff: "Quarterstaff",
+  Quarterstaves: "Quarterstaff",
+  Talisman: "Talisman",
+  Talismans: "Talisman",
+  Flail: "Flail",
+  Flails: "Flail",
+  Sword: "Sword",
+  Swords: "Sword",
+  Axe: "Axe",
+  Axes: "Axe",
+  Dagger: "Dagger",
+  Daggers: "Dagger",
 
   // Armour
   Gloves: "Gloves",
@@ -256,20 +242,28 @@ const CLASS_TO_TRACKER_TYPE: Record<string, string> = {
   Helmets: "Helmet",
   Shield: "Shield",
   Shields: "Shield",
+  Buckler: "Shield",
+  Bucklers: "Shield",
+  Targe: "Shield",
+  Targes: "Shield",
+  "Tower Shield": "Shield",
+  "Tower Shields": "Shield",
+  Focus: "Focus",
+  Foci: "Focus",
 
-  // Other collector categories
-  Map: "Map",
-  Maps: "Map",
+  // Other collectible classes
   Jewel: "Jewel",
   Jewels: "Jewel",
-  "Abyss Jewel": "Jewel",
-  "Abyss Jewels": "Jewel",
-  "Cluster Jewel": "Jewel",
-  "Cluster Jewels": "Jewel",
-  Contract: "Contract",
-  Contracts: "Contract",
-  Tincture: "Tincture",
-  Tinctures: "Tincture",
+  Charm: "Charm",
+  Charms: "Charm",
+  Waystone: "Waystone",
+  Waystones: "Waystone",
+  Tablet: "Tablet",
+  Tablets: "Tablet",
+  Relic: "Relic",
+  Relics: "Relic",
+  Map: "Map",
+  Maps: "Map",
 };
 
 function normalize(value: string | null | undefined) {
@@ -849,7 +843,7 @@ function metadataChanged(
       remote.dropRestricted ||
     existing.is_replica !== remote.isReplica ||
     existing.is_legacy_only !==
-      (remote.isInGame ? 0 : 1)
+      (remote.isInGame && remote.dropEnabled ? 0 : 1)
   );
 }
 
@@ -1458,7 +1452,7 @@ try {
   );
 }
 
-if (remote.length < 800) {
+if (remote.length < 300) {
     throw new Error(
       `PoE Wiki returned only ${remote.length} usable unique entries. ` +
         "That is far below the expected catalogue size, so the local " +
@@ -1618,7 +1612,7 @@ if (remote.length < 800) {
         item.dropRestricted,
         item.isReplica,
         item.id,
-        item.isInGame ? 0 : 1,
+        item.isInGame && item.dropEnabled ? 0 : 1,
         item.removalVersion,
       ],
     );
@@ -1988,6 +1982,84 @@ console.log(
   "Vestigial availability updated using item-class rules.",
 );
 
+/*
+ * PoE 2 edition rules override the inherited PoE 1 rules above.
+ *
+ * Reliquary Vaults provide foil versions of PoE 2 uniques.
+ * Current obtainable variants are therefore considered Foil-capable.
+ * Legacy/drop-disabled variants remain unknown because historical
+ * foil availability cannot safely be inferred.
+ *
+ * Foulborn and Vestigial are PoE 1-only mechanics.
+ */
+for (const item of remote) {
+  const poe2Editions: Array<[
+    CollectibleEdition,
+    EditionAvailability,
+    string,
+  ]> = [
+    [
+      "foil",
+      item.isInGame && item.dropEnabled
+        ? "available"
+        : "unknown",
+      "poe2-reliquary-general",
+    ],
+    [
+      "foulborn",
+      "unavailable",
+      "poe2-not-applicable",
+    ],
+    [
+      "vestigial",
+      "unavailable",
+      "poe2-not-applicable",
+    ],
+  ];
+
+  for (
+    const [
+      edition,
+      availability,
+      source,
+    ] of poe2Editions
+  ) {
+    await db.execute(
+      `
+        INSERT INTO unique_variant_editions (
+          variant_id,
+          edition,
+          availability,
+          source,
+          checked_at
+        )
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT (
+          variant_id,
+          edition
+        )
+        DO UPDATE SET
+          availability =
+            excluded.availability,
+          source =
+            excluded.source,
+          checked_at =
+            excluded.checked_at
+        WHERE
+          unique_variant_editions.source !=
+            'manual'
+      `,
+      [
+        item.id,
+        edition,
+        availability,
+        source,
+        editionCheckedAt,
+      ],
+    );
+  }
+}
+
 await db.execute(`
   DELETE FROM unique_variant_editions
   WHERE
@@ -2069,7 +2141,7 @@ await db.execute(`
   return {
     revision,
     label:
-      "Canonical PoE Wiki catalogue",
+      "Canonical PoE 2 Wiki catalogue",
     newFamilies,
     newVariants,
     dropDisabled,
