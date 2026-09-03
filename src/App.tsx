@@ -266,6 +266,95 @@ const IMPORT_SHEET_TYPES: Record<string, string> = {
   relics: "Relic",
 };
 
+const POE2_UNIQUE_TAB_TYPE_ORDER = [
+  "Flask",
+  "Amulet",
+  "Ring",
+  "Wand",
+  "Mace",
+  "Bow",
+  "Staff",
+  "Quiver",
+  "Belt",
+  "Gloves",
+  "Boots",
+  "Body Armour",
+  "Helmet",
+  "Shield",
+  "Jewel",
+  "Charm",
+  "Crossbow",
+  "Focus",
+  "Sceptre",
+  "Spear",
+  "Quarterstaff",
+  "Talisman",
+] as const;
+
+const POE2_UNIQUE_TAB_TYPE_RANK =
+  new Map<string, number>(
+    POE2_UNIQUE_TAB_TYPE_ORDER.map(
+      (itemType, index) => [
+        itemType,
+        index,
+      ],
+    ),
+  );
+
+function comparePoe2UniqueTabTypes(
+  left: string,
+  right: string,
+) {
+  if (left === right) {
+    return 0;
+  }
+
+  /*
+   * Sword uniques arrive with 0.5.5, but we do not yet
+   * know where GGG places Swords in the unique stash tab.
+   * Keep them at the very bottom until the live tab order
+   * can be confirmed.
+   */
+  if (left === "Sword") {
+    return 1;
+  }
+
+  if (right === "Sword") {
+    return -1;
+  }
+
+  const leftRank =
+    POE2_UNIQUE_TAB_TYPE_RANK.get(
+      left,
+    );
+  const rightRank =
+    POE2_UNIQUE_TAB_TYPE_RANK.get(
+      right,
+    );
+
+  if (
+    leftRank !== undefined &&
+    rightRank !== undefined
+  ) {
+    return leftRank - rightRank;
+  }
+
+  if (leftRank !== undefined) {
+    return -1;
+  }
+
+  if (rightRank !== undefined) {
+    return 1;
+  }
+
+  /*
+   * Future or otherwise unlisted item types remain stable
+   * and usable: they come after the known stash-tab types,
+   * alphabetically, but still before Sword.
+   */
+  return left.localeCompare(right);
+}
+
 const IMPORT_NAME_ALIASES = new Map([
   ["advanced fortress", "advancing fortress"],
 ]);
@@ -290,7 +379,7 @@ function normalizeImportItemType(sheetName: string) {
 function normalizeImportName(value: string) {
   return value
     .normalize("NFKC")
-    .replace(/[â€™â€˜]/g, "'")
+    .replace(/[\u2019\u2018]/g, "'")
     .replace(/[^a-zA-Z0-9]+/g, " ")
     .replace(/\s+/g, " ")
     .trim()
@@ -898,7 +987,7 @@ async function fetchActiveChallengeLeagues(): Promise<
     {
       headers: {
         Accept: "application/json",
-        "User-Agent": "PoE2-Collector/0.1.0",
+        "User-Agent": "PoE2-Collector/0.1.1",
       },
     },
   );
@@ -1509,7 +1598,7 @@ if (!payload) {
           aria-label="Close overlay"
           onClick={hideOverlayManually}
         >
-          Ã—
+          {"\u00D7"}
         </button>
       </div>
 
@@ -1551,7 +1640,7 @@ if (!payload) {
 
   const statusHeading =
     editionLabel
-      ? `STANDARD â€¢ ${editionLabel} EDITION`
+      ? `STANDARD \u2022 ${editionLabel} EDITION`
       : "STANDARD COLLECTION";
 
   const statusValue =
@@ -1738,7 +1827,7 @@ const hasUncertainEdition =
           aria-label="Close overlay"
           onClick={hideOverlayManually}
         >
-          Ã—
+          {"\u00D7"}
         </button>
       </div>
 
@@ -1905,6 +1994,7 @@ function TrackingBadges({
   extraTracking,
   editionAvailability,
   editionSources,
+  isCollected,
   isMissing,
   onToggle,
   onMarkMissing,
@@ -1914,6 +2004,7 @@ function TrackingBadges({
   extraTracking: ExtraTracking;
   editionAvailability: EditionAvailabilityMap;
   editionSources: EditionSourceMap;
+  isCollected: boolean;
   isMissing: boolean;
   onToggle: (flag: TrackingFlag) => void;
   onMarkMissing: () => void;
@@ -1987,7 +2078,7 @@ const vestigialUncertain =
 
       <button
         type="button"
-        className={`tracking-badge owned ${flags.includes("owned") ? "active" : ""}`}
+        className={`tracking-badge owned ${isCollected ? "active" : ""}`}
         style={getStatusStyle(colors.owned)}
         onClick={() => onToggle("owned")}
       >
@@ -2177,10 +2268,19 @@ const [
   setRolloverChangesExpanded,
 ] = useState(false);
 
+  function isUniqueCollected(unique: UniqueEntry) {
+    return (
+      unique.reviewed &&
+      unique.flags.some(
+        (flag) => collectionRules[flag],
+      )
+    );
+  }
+
   function isUniqueMissing(unique: UniqueEntry) {
     return (
       unique.reviewed &&
-      !unique.flags.some((flag) => collectionRules[flag])
+      !isUniqueCollected(unique)
     );
   }
 
@@ -3578,7 +3678,7 @@ const isLegacyOnly =
 
       const checkedTime = new Date(result.checkedAt).toLocaleString();
       setCatalogueCheckMessage(
-        `Last checked ${checkedTime} â€¢ ${result.remoteItems.toLocaleString()} catalogue entries received.`,
+        `Last checked ${checkedTime} \u2022 ${result.remoteItems.toLocaleString()} catalogue entries received.`,
       );
 
       if (result.hasVisibleChanges) {
@@ -3966,7 +4066,7 @@ function captureLookupHotkey(
 
   if (!key) {
     setHotkeySettingMessage(
-      "Use a letter, number, or F1â€“F12 as the main key.",
+      "Use a letter, number, or F1\u2013F12 as the main key.",
     );
     return;
   }
@@ -4479,8 +4579,10 @@ setActiveProfileId(
     return [
       {
         label: "Owned",
-        count: visibleUniques.filter((unique) => unique.flags.includes("owned"))
-          .length,
+        count: visibleUniques.filter(
+          (unique) =>
+            isUniqueCollected(unique),
+        ).length,
       },
       {
         label: "Missing",
@@ -4535,8 +4637,8 @@ setActiveProfileId(
       visibleUniques.map((unique) => unique.itemType),
     );
 
-    return Array.from(types).sort((a, b) =>
-      a.localeCompare(b),
+    return Array.from(types).sort(
+      comparePoe2UniqueTabTypes,
     );
   }, [visibleUniques]);
 
@@ -4562,6 +4664,8 @@ setActiveProfileId(
         matchesStatus = !unique.reviewed;
       } else if (statusFilter === "missing") {
         matchesStatus = isUniqueMissing(unique);
+      } else if (statusFilter === "owned") {
+        matchesStatus = isUniqueCollected(unique);
       } else if (statusFilter !== "all") {
         matchesStatus = unique.flags.includes(statusFilter);
       }
@@ -4574,7 +4678,11 @@ setActiveProfileId(
 
     return [...filtered].sort((a, b) => {
       if (sortMode === "type") {
-        const typeComparison = a.itemType.localeCompare(b.itemType);
+        const typeComparison =
+          comparePoe2UniqueTabTypes(
+            a.itemType,
+            b.itemType,
+          );
 
         if (typeComparison !== 0) {
           return typeComparison;
@@ -5063,7 +5171,7 @@ try {
         const editionText =
           result.edition === "normal"
             ? ""
-            : ` â€¢ ${result.edition}`;
+            : ` \u2022 ${result.edition}`;
 
         setHotkeyMessage(
           `Matched ${result.name}${editionText}.`,
@@ -6349,8 +6457,8 @@ try {
         setRolloverPreviewOpen(true);
       }}
     >
-      âš  {rolloverPreview.oldLeagueName} appears to have ended
-      {" â€” "}
+      {"\u26A0"} {rolloverPreview.oldLeagueName} appears to have ended
+      {" \u2014 "}
       Review
     </button>
   )}
@@ -6438,7 +6546,7 @@ try {
         title="Clear search"
         onClick={() => setSearchTerm("")}
       >
-        Ã—
+        {"\u00D7"}
       </button>
     )}
   </div>
@@ -6454,8 +6562,8 @@ try {
                   handleSortModeChange(event.target.value as SortMode)
                 }
               >
-                <option value="alphabetical">All Aâ€“Z</option>
-                <option value="type">By Type â†’ Aâ€“Z</option>
+                <option value="alphabetical">{"All A\u2013Z"}</option>
+                <option value="type">{"By Type \u2192 A\u2013Z"}</option>
               </select>
             </div>
 
@@ -6545,7 +6653,7 @@ try {
                             <span className="unique-variant-meta">
                               {[unique.baseType, unique.variantLabel]
                                 .filter(Boolean)
-                                .join(" â€¢ ")}
+                                .join(" \u2022 ")}
                             </span>
                           )}
                         </span>
@@ -6573,6 +6681,7 @@ editionAvailability={
 editionSources={
   unique.editionSources
 }
+                        isCollected={isUniqueCollected(unique)}
                         isMissing={isUniqueMissing(unique)}
                         onToggle={(flag) =>
                           toggleTrackingFlag(unique.id, flag)
@@ -6605,7 +6714,7 @@ editionSources={
                               <span className="unique-variant-meta">
                                 {[unique.baseType, unique.variantLabel]
                                   .filter(Boolean)
-                                  .join(" â€¢ ")}
+                                  .join(" \u2022 ")}
                               </span>
                             )}
                           </span>
@@ -6632,6 +6741,7 @@ editionAvailability={
 editionSources={
   unique.editionSources
 }
+                          isCollected={isUniqueCollected(unique)}
                           isMissing={isUniqueMissing(unique)}
                           onToggle={(flag) =>
                             toggleTrackingFlag(unique.id, flag)
@@ -6738,7 +6848,7 @@ editionSources={
                     <strong>
                       {change.name}
                     </strong>
-                    {" â€” "}
+                    {" \u2014 "}
                     {change.addedFlags
                       .map(
                         (flag) =>
@@ -7062,9 +7172,9 @@ editionSources={
                                 >
                                   <strong>{item.name}</strong>
                                   {item.variantLabel
-                                    ? ` â€” ${item.variantLabel}`
+                                    ? ` \u2014 ${item.variantLabel}`
                                     : ""}
-                                  {" â€¢ "}
+                                  {" \u2022 "}
                                   {item.itemType}
                                 </p>
                               ),
@@ -7204,9 +7314,9 @@ editionSources={
                           >
                             <strong>{item.name}</strong>
                             {item.variantLabel
-                              ? ` â€” ${item.variantLabel}`
+                              ? ` \u2014 ${item.variantLabel}`
                               : ""}
-                            {" â€¢ "}
+                            {" \u2022 "}
                             {item.itemType}
                           </p>
                         ),
@@ -7291,7 +7401,7 @@ editionSources={
                 type="button"
                 onClick={() => setSettingsOpen(false)}
               >
-                Ã—
+                {"\u00D7"}
               </button>
             </div>
 
@@ -7724,7 +7834,7 @@ Perching Staff
                           parserTestResult.variantLabel,
                         ]
                           .filter(Boolean)
-                          .join(" â€¢ ") || parserTestResult.itemType}
+                          .join(" \u2022 ") || parserTestResult.itemType}
                       </small>
                       <small>
                         Edition:{" "}
@@ -7826,7 +7936,7 @@ Perching Staff
                                   candidate.variantLabel,
                                 ]
                                   .filter(Boolean)
-                                  .join(" â€¢ "),
+                                  .join(" \u2022 "),
                               )
                               .join(" | ")}
                           </small>
