@@ -677,7 +677,7 @@ function statusToFlags(status: string): TrackingFlag[] {
       return ["wearing"];
     case "Owned Foil":
     case "Owned Rainbow":
-      return ["foil"];
+      return ["owned", "foil"];
     default:
       return [];
   }
@@ -1722,7 +1722,13 @@ const hasUncertainEdition =
       return;
     }
 
-    const enabled = !payload.trackingFlags.includes(flag);
+    const enabled =
+      !payload.trackingFlags.includes(flag);
+
+    const enabledFlags: TrackingFlag[] =
+      enabled && flag === "foil"
+        ? ["owned", "foil"]
+        : [flag];
 
     setPayload((current) => {
       if (!current) {
@@ -1733,24 +1739,34 @@ const hasUncertainEdition =
         ...current,
         trackingReviewed: true,
         trackingFlags: enabled
-          ? current.trackingFlags.includes(flag)
-            ? current.trackingFlags
-            : [...current.trackingFlags, flag]
+          ? Array.from(
+              new Set([
+                ...current.trackingFlags,
+                ...enabledFlags,
+              ]),
+            )
           : current.trackingFlags.filter(
-              (existingFlag) => existingFlag !== flag,
+              (existingFlag) =>
+                existingFlag !== flag,
             ),
         standardReviewed:
-          current.trackingProfileId === STANDARD_PROFILE_ID
+          current.trackingProfileId ===
+          STANDARD_PROFILE_ID
             ? true
             : current.standardReviewed,
         standardFlags:
-          current.trackingProfileId === STANDARD_PROFILE_ID
+          current.trackingProfileId ===
+          STANDARD_PROFILE_ID
             ? enabled
-              ? current.standardFlags.includes(flag)
-                ? current.standardFlags
-                : [...current.standardFlags, flag]
+              ? Array.from(
+                  new Set([
+                    ...current.standardFlags,
+                    ...enabledFlags,
+                  ]),
+                )
               : current.standardFlags.filter(
-                  (existingFlag) => existingFlag !== flag,
+                  (existingFlag) =>
+                    existingFlag !== flag,
                 )
             : current.standardFlags,
       };
@@ -1760,7 +1776,8 @@ const hasUncertainEdition =
       "poe-overlay-action",
       {
         kind: "toggle",
-        profileId: payload.trackingProfileId,
+        profileId:
+          payload.trackingProfileId,
         uniqueId: payload.uniqueId,
         flag,
         enabled,
@@ -4919,6 +4936,11 @@ async function showOverlayLoading(
       return;
     }
 
+    const enabledFlags: TrackingFlag[] =
+      enabled && flag === "foil"
+        ? ["owned", "foil"]
+        : [flag];
+
     try {
       await database.execute(
         `
@@ -4933,17 +4955,23 @@ async function showOverlayLoading(
       );
 
       if (enabled) {
-        await database.execute(
-          `
-            INSERT OR REPLACE INTO profile_unique_tracking (
-              profile_id,
-              unique_id,
-              flag
-            )
-            VALUES (?, ?, ?)
-          `,
-          [profileId, uniqueId, flag],
-        );
+        for (const enabledFlag of enabledFlags) {
+          await database.execute(
+            `
+              INSERT OR REPLACE INTO profile_unique_tracking (
+                profile_id,
+                unique_id,
+                flag
+              )
+              VALUES (?, ?, ?)
+            `,
+            [
+              profileId,
+              uniqueId,
+              enabledFlag,
+            ],
+          );
+        }
       } else {
         await database.execute(
           `
@@ -4953,7 +4981,11 @@ async function showOverlayLoading(
               AND unique_id = ?
               AND flag = ?
           `,
-          [profileId, uniqueId, flag],
+          [
+            profileId,
+            uniqueId,
+            flag,
+          ],
         );
       }
 
@@ -4965,9 +4997,12 @@ async function showOverlayLoading(
                   ...item,
                   reviewed: true,
                   flags: enabled
-                    ? item.flags.includes(flag)
-                      ? item.flags
-                      : [...item.flags, flag]
+                    ? Array.from(
+                        new Set([
+                          ...item.flags,
+                          ...enabledFlags,
+                        ]),
+                      )
                     : item.flags.filter(
                         (existingFlag) =>
                           existingFlag !== flag,
@@ -5459,13 +5494,21 @@ try {
       return;
     }
 
-    const unique = uniques.find((item) => item.id === uniqueId);
+    const unique = uniques.find(
+      (item) => item.id === uniqueId,
+    );
 
     if (!unique) {
       return;
     }
 
-    const isActive = unique.flags.includes(flag);
+    const isActive =
+      unique.flags.includes(flag);
+
+    const enabledFlags: TrackingFlag[] =
+      !isActive && flag === "foil"
+        ? ["owned", "foil"]
+        : [flag];
 
     try {
       setAppError("");
@@ -5491,20 +5534,30 @@ try {
               AND unique_id = ?
               AND flag = ?
           `,
-          [activeProfileId, uniqueId, flag],
+          [
+            activeProfileId,
+            uniqueId,
+            flag,
+          ],
         );
       } else {
-        await database.execute(
-          `
-            INSERT OR REPLACE INTO profile_unique_tracking (
-              profile_id,
-              unique_id,
-              flag
-            )
-            VALUES (?, ?, ?)
-          `,
-          [activeProfileId, uniqueId, flag],
-        );
+        for (const enabledFlag of enabledFlags) {
+          await database.execute(
+            `
+              INSERT OR REPLACE INTO profile_unique_tracking (
+                profile_id,
+                unique_id,
+                flag
+              )
+              VALUES (?, ?, ?)
+            `,
+            [
+              activeProfileId,
+              uniqueId,
+              enabledFlag,
+            ],
+          );
+        }
       }
 
       setUniques((current) =>
@@ -5518,9 +5571,15 @@ try {
             reviewed: true,
             flags: isActive
               ? item.flags.filter(
-                  (existingFlag) => existingFlag !== flag,
+                  (existingFlag) =>
+                    existingFlag !== flag,
                 )
-              : [...item.flags, flag],
+              : Array.from(
+                  new Set([
+                    ...item.flags,
+                    ...enabledFlags,
+                  ]),
+                ),
           };
         }),
       );
@@ -5528,7 +5587,9 @@ try {
       console.error(error);
 
       setAppError(
-        error instanceof Error ? error.message : String(error),
+        error instanceof Error
+          ? error.message
+          : String(error),
       );
     }
   }
