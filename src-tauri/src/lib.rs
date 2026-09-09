@@ -3,13 +3,22 @@ use enigo::{
     Enigo, Key, Keyboard, Settings,
 };
 use serde::Deserialize;
-use sqlx::{sqlite::SqliteConnectOptions, Connection, SqliteConnection};
+use sqlx::{
+    sqlite::{
+        SqliteConnectOptions,
+        SqliteJournalMode,
+        SqliteSynchronous,
+    },
+    Connection,
+    SqliteConnection,
+};
 use std::time::Duration;
 
 #[cfg(desktop)]
 use tauri::{
     menu::{Menu, MenuItem},
     tray::TrayIconBuilder,
+    Emitter,
     Manager,
 };
 
@@ -118,13 +127,15 @@ async fn execute_sqlite_transaction(
         .join("poe2-collector.db");
 
     if !database_path.exists() {
-        return Err("PoE 2 Collector database could not be found.".to_string());
+        return Err("PoE 2 Unique Tracker database could not be found.".to_string());
     }
 
     let options = SqliteConnectOptions::new()
-        .filename(database_path)
-        .create_if_missing(false)
-        .busy_timeout(Duration::from_secs(10));
+    .filename(database_path)
+    .create_if_missing(false)
+    .journal_mode(SqliteJournalMode::Wal)
+    .synchronous(SqliteSynchronous::Normal)
+    .busy_timeout(Duration::from_secs(15));
 
     let mut connection = SqliteConnection::connect_with(&options)
         .await
@@ -171,7 +182,7 @@ pub fn run() {
 
     #[cfg(desktop)]
     {
-        // Keep PoE 2 Collector to a single running instance. This avoids
+        // Keep PoE 2 Unique Tracker to a single running instance. This avoids
         // duplicate SQLite writers and duplicate global-hotkey registration.
         builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             if let Some(window) = app.get_webview_window("main") {
@@ -213,10 +224,10 @@ pub fn run() {
         TrayIconBuilder::new()
             .icon(
                 app.default_window_icon()
-                    .expect("PoE 2 Collector icon is missing")
+                    .expect("PoE 2 Unique Tracker icon is missing")
                     .clone(),
             )
-            .tooltip("PoE 2 Collector")
+            .tooltip("PoE 2 Unique Tracker")
             .menu(&tray_menu)
             .show_menu_on_left_click(false)
             .on_menu_event(|app, event| match event.id.as_ref() {
@@ -243,6 +254,7 @@ pub fn run() {
 
     Ok(())
 })
+
 .on_window_event(|window, event| {
     if window.label() != "main" {
         return;
@@ -250,7 +262,11 @@ pub fn run() {
 
     if let tauri::WindowEvent::CloseRequested { api, .. } = event {
         api.prevent_close();
-        let _ = window.hide();
+
+        let _ = window.emit(
+            "main-close-requested",
+            (),
+        );
     }
 })
 .plugin(tauri_plugin_clipboard_manager::init())

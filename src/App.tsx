@@ -83,6 +83,35 @@ type CatalogueUpdateSummary = {
   updatedEntries: number;
 };
 
+type TrackerDiscoveryItem = {
+  id: string;
+  name: string;
+  itemType: string;
+  variantLabel: string | null;
+  releaseVersion: string | null;
+};
+
+type PendingLeagueDetection = {
+  profileId: string;
+  leagueName: string;
+};
+
+type TrackerDiscoveryNotice =
+  | {
+      id: string;
+      kind: "new-league";
+      leagueName: string;
+      profileId: string;
+      items: TrackerDiscoveryItem[];
+      createdAt: number;
+    }
+  | {
+      id: string;
+      kind: "new-unique";
+      items: TrackerDiscoveryItem[];
+      createdAt: number;
+    };
+
 type SortMode = "alphabetical" | "type";
 
 type StatusFilter =
@@ -151,13 +180,25 @@ type SqliteTransactionStatement = {
   params?: string[];
 };
 
-type ImportMode = "status-list" | "missing-only";
+type ImportMode =
+  | "status-list"
+  | "missing-only"
+  | "color-coded-list";
+
+type ColorCodedStatus =
+  | "missing"
+  | "league-owned"
+  | "standard-owned"
+  | "unreviewed";
 
 type ParsedImportRow = {
   id: string;
   name: string;
   itemType: string;
   rawStatus: string;
+  sourceSheetName: string;
+  sourceRowIndex: number;
+  colorCodedStatus: ColorCodedStatus;
 };
 
 type ProtectedLeagueUnique = {
@@ -177,6 +218,7 @@ type PendingImport = {
 };
 
 type MissingOnlyInferenceSummary = {
+  kind: "missing-only";
   inferredOwned: number;
   explicitMissing: number;
   protectedNewLeague: ProtectedLeagueUnique[];
@@ -186,8 +228,58 @@ type MissingOnlyInferenceSummary = {
   destinationProfileName: string;
 };
 
+type ColorCodedImportSummary = {
+  kind: "color-coded-list";
+  standardOwned: number;
+  leagueOwned: number;
+  missing: number;
+  unknownCandidatesMarkedUnreviewed: number;
+  unresolvedPlaceholders: number;
+  unresolvedNamedRows: number;
+  leagueProfileId: string;
+  leagueProfileName: string;
+};
+
+type ImportApplicationSummary =
+  | MissingOnlyInferenceSummary
+  | ColorCodedImportSummary;
+
+type SheetJsColor = {
+  rgb?: string;
+};
+
+type SheetJsStyledCell = {
+  s?: {
+    /*
+     * SheetJS can expose parsed styles in either its flat
+     * style shape or the nested font/fill shape depending
+     * on the workbook/style path. Support both.
+     */
+    color?: SheetJsColor;
+    fgColor?: SheetJsColor;
+    font?: {
+      color?: SheetJsColor;
+    };
+    fill?: {
+      fgColor?: SheetJsColor;
+    };
+  };
+};
+
+const COLOR_CODED_IMPORT_STATUS = {
+  missing: "Color-coded Missing",
+  leagueOwned: "Color-coded League Owned",
+  standardOwned: "Color-coded Standard Owned",
+} as const;
+
 const STANDARD_PROFILE_ID = "standard";
 const CURRENT_LEAGUE_PROFILE_ID = "current-league";
+
+const PENDING_DISCOVERY_NOTICES_META_KEY =
+  "pending_tracker_discovery_notices_v1";
+
+const PENDING_NEW_LEAGUES_META_KEY =
+  "pending_new_league_detections_v1";
 
 function makeLeagueProfileId(
   leagueKey: string,
@@ -391,6 +483,60 @@ function importNameWithAlias(value: string) {
   return IMPORT_NAME_ALIASES.get(normalized) ?? normalized;
 }
 
+function normalizeSheetJsRgb(
+  value: string | undefined,
+) {
+  if (!value) {
+    return null;
+  }
+
+  const normalized = value
+    .replace(/[^0-9a-f]/gi, "")
+    .toUpperCase();
+
+  return normalized.length >= 6
+    ? normalized.slice(-6)
+    : null;
+}
+
+function getColorCodedStatus(
+  cell: SheetJsStyledCell | undefined,
+  name: string,
+): ColorCodedStatus {
+  const compactName =
+    name.replace(/\s+/g, "");
+
+  if (/^\?+$/.test(compactName)) {
+    return "unreviewed";
+  }
+
+  const fontColor =
+    normalizeSheetJsRgb(
+      cell?.s?.font?.color?.rgb ??
+        cell?.s?.color?.rgb,
+    );
+
+  const fillColor =
+    normalizeSheetJsRgb(
+      cell?.s?.fill?.fgColor?.rgb ??
+        cell?.s?.fgColor?.rgb,
+    );
+
+  if (
+    fontColor === "006100" &&
+    fillColor === "C6EFCE"
+  ) {
+    return "standard-owned";
+  }
+
+  if (fontColor === "00B050") {
+    return "league-owned";
+  }
+
+  return "missing";
+}
+
+
 function importNameDistance(leftValue: string, rightValue: string) {
   const left = importNameWithAlias(leftValue);
   const right = importNameWithAlias(rightValue);
@@ -499,6 +645,336 @@ function latestReleaseLine(values: Array<string | null>) {
   }
 
   return best?.label ?? null;
+}
+
+async function readJsonMeta<T>(
+  db: Database,
+  key: string,
+  fallback: T,
+): Promise<T> {
+  const rows = await db.select<
+    { value: string }[]
+  >(
+    `
+      SELECT value
+      FROM app_meta
+      WHERE key = ?
+    `,
+    [key],
+  );
+
+  const raw = rows[0]?.value;
+
+  if (!raw) {
+    return fallback;
+  }
+
+  try {
+    return JSON.parse(raw) as T;
+  } catch (error) {
+    console.warn(
+      `Could not parse saved tracker metadata for ${key}:`,
+      error,
+    );
+
+    return fallback;
+  }
+}
+
+async function writeJsonMeta(
+  db: Database,
+  key: string,
+  value: unknown,
+) {
+  await db.execute(
+    `
+      INSERT OR REPLACE INTO app_meta (
+        key,
+        value
+      )
+      VALUES (?, ?)
+    `,
+    [
+      key,
+      JSON.stringify(value),
+    ],
+  );
+}
+
+async function readPendingLeagueDetections(
+  db: Database,
+): Promise<PendingLeagueDetection[]> {
+  const saved =
+    await readJsonMeta<unknown>(
+      db,
+      PENDING_NEW_LEAGUES_META_KEY,
+      [],
+    );
+
+  if (!Array.isArray(saved)) {
+    return [];
+  }
+
+  return saved.flatMap((entry) => {
+    if (
+      !entry ||
+      typeof entry !== "object"
+    ) {
+      return [];
+    }
+
+    const value = entry as {
+      profileId?: unknown;
+      leagueName?: unknown;
+    };
+
+    if (
+      typeof value.profileId !== "string" ||
+      typeof value.leagueName !== "string"
+    ) {
+      return [];
+    }
+
+    return [
+      {
+        profileId: value.profileId,
+        leagueName: value.leagueName,
+      },
+    ];
+  });
+}
+
+async function appendPendingLeagueDetections(
+  db: Database,
+  additions: PendingLeagueDetection[],
+) {
+  if (additions.length === 0) {
+    return;
+  }
+
+  const existing =
+    await readPendingLeagueDetections(
+      db,
+    );
+
+  const byProfileId =
+    new Map<
+      string,
+      PendingLeagueDetection
+    >(
+      existing.map((entry) => [
+        entry.profileId,
+        entry,
+      ]),
+    );
+
+  for (const addition of additions) {
+    byProfileId.set(
+      addition.profileId,
+      addition,
+    );
+  }
+
+  await writeJsonMeta(
+    db,
+    PENDING_NEW_LEAGUES_META_KEY,
+    Array.from(
+      byProfileId.values(),
+    ),
+  );
+}
+
+async function clearPendingLeagueDetections(
+  db: Database,
+) {
+  await writeJsonMeta(
+    db,
+    PENDING_NEW_LEAGUES_META_KEY,
+    [],
+  );
+}
+
+async function readDiscoveryNotices(
+  db: Database,
+): Promise<TrackerDiscoveryNotice[]> {
+  const saved =
+    await readJsonMeta<unknown>(
+      db,
+      PENDING_DISCOVERY_NOTICES_META_KEY,
+      [],
+    );
+
+  if (!Array.isArray(saved)) {
+    return [];
+  }
+
+  const notices:
+    TrackerDiscoveryNotice[] = [];
+
+  for (const entry of saved) {
+    if (
+      !entry ||
+      typeof entry !== "object"
+    ) {
+      continue;
+    }
+
+    const value = entry as {
+      id?: unknown;
+      kind?: unknown;
+      leagueName?: unknown;
+      profileId?: unknown;
+      items?: unknown;
+      createdAt?: unknown;
+    };
+
+    if (
+      typeof value.id !== "string" ||
+      (value.kind !== "new-league" &&
+        value.kind !== "new-unique") ||
+      !Array.isArray(value.items)
+    ) {
+      continue;
+    }
+
+    const items:
+      TrackerDiscoveryItem[] = [];
+
+    for (const item of value.items) {
+      if (
+        !item ||
+        typeof item !== "object"
+      ) {
+        continue;
+      }
+
+      const candidate = item as {
+        id?: unknown;
+        name?: unknown;
+        itemType?: unknown;
+        variantLabel?: unknown;
+        releaseVersion?: unknown;
+      };
+
+      if (
+        typeof candidate.id !== "string" ||
+        typeof candidate.name !== "string" ||
+        typeof candidate.itemType !== "string"
+      ) {
+        continue;
+      }
+
+      items.push({
+        id: candidate.id,
+        name: candidate.name,
+        itemType:
+          candidate.itemType,
+        variantLabel:
+          typeof candidate.variantLabel ===
+          "string"
+            ? candidate.variantLabel
+            : null,
+        releaseVersion:
+          typeof candidate.releaseVersion ===
+          "string"
+            ? candidate.releaseVersion
+            : null,
+      });
+    }
+
+    const createdAt =
+      typeof value.createdAt === "number" &&
+      Number.isFinite(value.createdAt)
+        ? value.createdAt
+        : Date.now();
+
+    if (value.kind === "new-league") {
+      if (
+        typeof value.leagueName !== "string" ||
+        typeof value.profileId !== "string"
+      ) {
+        continue;
+      }
+
+      notices.push({
+        id: value.id,
+        kind: "new-league",
+        leagueName:
+          value.leagueName,
+        profileId:
+          value.profileId,
+        items,
+        createdAt,
+      });
+
+      continue;
+    }
+
+    notices.push({
+      id: value.id,
+      kind: "new-unique",
+      items,
+      createdAt,
+    });
+  }
+
+  return notices;
+}
+
+async function appendDiscoveryNotices(
+  db: Database,
+  additions: TrackerDiscoveryNotice[],
+) {
+  const existing =
+    await readDiscoveryNotices(
+      db,
+    );
+
+  const byId =
+    new Map<
+      string,
+      TrackerDiscoveryNotice
+    >(
+      existing.map((notice) => [
+        notice.id,
+        notice,
+      ]),
+    );
+
+  for (const addition of additions) {
+    byId.set(
+      addition.id,
+      addition,
+    );
+  }
+
+  const merged =
+    Array.from(
+      byId.values(),
+    ).sort(
+      (left, right) =>
+        left.createdAt -
+        right.createdAt,
+    );
+
+  await writeJsonMeta(
+    db,
+    PENDING_DISCOVERY_NOTICES_META_KEY,
+    merged,
+  );
+
+  return merged;
+}
+
+async function saveDiscoveryNotices(
+  db: Database,
+  notices: TrackerDiscoveryNotice[],
+) {
+  await writeJsonMeta(
+    db,
+    PENDING_DISCOVERY_NOTICES_META_KEY,
+    notices,
+  );
 }
 
 const DEFAULT_STATUS_COLORS: StatusColors = {
@@ -632,7 +1108,7 @@ function isEditionUncertain(
    * Direct evidence always wins.
    *
    * If the parser literally sees the edition in-game,
-   * or the player says they own one, PoE 2 Collector
+   * or the player says they own one, PoE 2 Unique Tracker
    * treats that edition as confirmed to exist.
    */
   if (
@@ -1286,6 +1762,9 @@ async function seedBuiltInSpecialVariants(db: Database) {
 }
 
 const DEFAULT_POE_LOOKUP_HOTKEY =
+  "CommandOrControl+Alt+C";
+
+const OLD_DEFAULT_POE_LOOKUP_HOTKEY =
   "CommandOrControl+Shift+C";
 
 function formatHotkeyForDisplay(
@@ -1326,7 +1805,13 @@ const DEV_LEAGUE_ROLLOVER_HOTKEY =
 
 const OVERLAY_LABEL = "poe-overlay";
 const OVERLAY_WIDTH = 430;
-const OVERLAY_HEIGHT = 300;
+const OVERLAY_HEIGHT = 330;
+
+type OverlayProfileState = {
+  id: string;
+  name: string;
+  flags: TrackingFlag[];
+};
 
 type OverlayPayload = {
   trackingProfileId: string;
@@ -1337,8 +1822,7 @@ type OverlayPayload = {
   itemType: string;
   variantLabel: string | null;
   edition: "normal" | "foulborn" | "vestigial";
-  standardFlags: TrackingFlag[];
-  standardReviewed: boolean;
+  profileStates: OverlayProfileState[];
   trackingFlags: TrackingFlag[];
   trackingReviewed: boolean;
   editionAvailability: EditionAvailabilityMap;
@@ -1556,6 +2040,7 @@ const handleBlur = () => {
     unlistenMessage = unlisten;
   });
 
+
   return () => {
     window.removeEventListener(
       "blur",
@@ -1587,7 +2072,7 @@ if (!payload) {
       <div className="poe-overlay-header">
         <div className="poe-overlay-title-wrap">
           <span className="poe-overlay-kicker">
-            POE 2 COLLECTOR
+            PoE 2 Unique Tracker
           </span>
           <h1>Unique Tracker</h1>
         </div>
@@ -1607,48 +2092,56 @@ if (!payload) {
   );
 }
 
-  const standardIsMissing =
-    payload.standardReviewed &&
-    !payload.standardFlags.some(
-      (flag) => payload.collectionRules[flag],
-    );
-
   const trackingIsMissing =
-    payload.trackingReviewed &&
-    !payload.trackingFlags.some(
-      (flag) => payload.collectionRules[flag],
-    );
+  payload.trackingReviewed &&
+  !payload.trackingFlags.some(
+    (flag) => payload.collectionRules[flag],
+  );
 
-  const editionLabel =
-    payload.edition === "foulborn"
-      ? "FOULBORN"
-      : payload.edition === "vestigial"
-        ? "VESTIGIAL"
-        : null;
+const editionLabel =
+  payload.edition === "foulborn"
+    ? "FOULBORN"
+    : payload.edition === "vestigial"
+      ? "VESTIGIAL"
+      : null;
 
-  const editionFlag =
-    payload.edition === "foulborn"
-      ? "foulborn"
-      : payload.edition === "vestigial"
-        ? "vestigial"
-        : null;
+const wornProfiles =
+  payload.profileStates.filter(
+    (profile) =>
+      profile.flags.includes("wearing"),
+  );
 
-  const standardOwnsQueriedEdition =
-    editionFlag === null
-      ? !standardIsMissing
-      : payload.standardFlags.includes(editionFlag);
+const ownedProfiles =
+  payload.profileStates.filter(
+    (profile) =>
+      profile.flags.length > 0 &&
+      !profile.flags.includes("wearing"),
+  );
 
-  const statusHeading =
-    editionLabel
-      ? `STANDARD \u2022 ${editionLabel} EDITION`
-      : "STANDARD COLLECTION";
+const statusHeading =
+  "COLLECTION STATUS";
 
-  const statusValue =
-    !payload.standardReviewed
-      ? "UNREVIEWED"
-      : standardOwnsQueriedEdition
-        ? "OWNED"
-        : "MISSING";
+const statusValue =
+  wornProfiles.length === 0 &&
+  ownedProfiles.length === 0
+    ? "Unowned"
+    : [
+        wornProfiles.length > 0
+          ? `Currently worn in ${wornProfiles
+              .map((profile) => profile.name)
+              .join(", ")}`
+          : null,
+        ownedProfiles.length > 0
+          ? `Owned in ${ownedProfiles
+              .map((profile) => profile.name)
+              .join(", ")}`
+          : null,
+      ]
+        .filter(
+          (value): value is string =>
+            value !== null,
+        )
+        .join(" • ");
 
   const trackingHeading =
     payload.trackingProfileId === STANDARD_PROFILE_ID
@@ -1731,46 +2224,42 @@ const hasUncertainEdition =
         : [flag];
 
     setPayload((current) => {
-      if (!current) {
-        return current;
-      }
+  if (!current) {
+    return current;
+  }
 
-      return {
-        ...current,
-        trackingReviewed: true,
-        trackingFlags: enabled
-          ? Array.from(
-              new Set([
-                ...current.trackingFlags,
-                ...enabledFlags,
-              ]),
-            )
-          : current.trackingFlags.filter(
-              (existingFlag) =>
-                existingFlag !== flag,
-            ),
-        standardReviewed:
-          current.trackingProfileId ===
-          STANDARD_PROFILE_ID
-            ? true
-            : current.standardReviewed,
-        standardFlags:
-          current.trackingProfileId ===
-          STANDARD_PROFILE_ID
-            ? enabled
-              ? Array.from(
-                  new Set([
-                    ...current.standardFlags,
-                    ...enabledFlags,
-                  ]),
-                )
-              : current.standardFlags.filter(
-                  (existingFlag) =>
-                    existingFlag !== flag,
-                )
-            : current.standardFlags,
-      };
-    });
+  const nextTrackingFlags =
+    enabled
+      ? Array.from(
+          new Set([
+            ...current.trackingFlags,
+            ...enabledFlags,
+          ]),
+        )
+      : current.trackingFlags.filter(
+          (existingFlag) =>
+            existingFlag !== flag,
+        );
+
+  return {
+    ...current,
+    trackingReviewed: true,
+    trackingFlags:
+      nextTrackingFlags,
+    profileStates:
+      current.profileStates.map(
+        (profile) =>
+          profile.id ===
+          current.trackingProfileId
+            ? {
+                ...profile,
+                flags:
+                  nextTrackingFlags,
+              }
+            : profile,
+      ),
+  };
+});
 
     await emit<OverlayAction>(
       "poe-overlay-action",
@@ -1791,22 +2280,25 @@ const hasUncertainEdition =
     }
 
     setPayload((current) =>
-      current
-        ? {
-            ...current,
-            trackingReviewed: true,
-            trackingFlags: [],
-            standardReviewed:
-              current.trackingProfileId === STANDARD_PROFILE_ID
-                ? true
-                : current.standardReviewed,
-            standardFlags:
-              current.trackingProfileId === STANDARD_PROFILE_ID
-                ? []
-                : current.standardFlags,
-          }
-        : current,
-    );
+  current
+    ? {
+        ...current,
+        trackingReviewed: true,
+        trackingFlags: [],
+        profileStates:
+          current.profileStates.map(
+            (profile) =>
+              profile.id ===
+              current.trackingProfileId
+                ? {
+                    ...profile,
+                    flags: [],
+                  }
+                : profile,
+          ),
+      }
+    : current,
+);
 
     await emit<OverlayAction>(
       "poe-overlay-action",
@@ -1823,7 +2315,7 @@ const hasUncertainEdition =
       <div className="poe-overlay-header">
         <div className="poe-overlay-title-wrap">
           <span className="poe-overlay-kicker">
-            POE 2 COLLECTOR
+            PoE 2 Unique Tracker
           </span>
           <h1>{payload.name}</h1>
 
@@ -1863,11 +2355,11 @@ const hasUncertainEdition =
           </span>
         )}
 
-        {!payload.standardReviewed && (
-          <span className="poe-overlay-unreviewed">
-            UNREVIEWED
-          </span>
-        )}
+        {!payload.trackingReviewed && (
+  <span className="poe-overlay-unreviewed">
+    UNREVIEWED
+  </span>
+)}
       </div>
 
       <div className="poe-overlay-status-heading">
@@ -2003,6 +2495,53 @@ function wait(milliseconds: number) {
   return new Promise<void>((resolve) => {
     window.setTimeout(resolve, milliseconds);
   });
+}
+
+function isSqliteLockedError(
+  error: unknown,
+) {
+  const message =
+    error instanceof Error
+      ? error.message
+      : String(error);
+
+  return (
+    message
+      .toLowerCase()
+      .includes("database is locked") ||
+    message.includes("(code: 5)")
+  );
+}
+
+async function withSqliteLockRetry<T>(
+  operation: () => Promise<T>,
+): Promise<T> {
+  const attempts = 4;
+
+  for (
+    let attempt = 1;
+    attempt <= attempts;
+    attempt += 1
+  ) {
+    try {
+      return await operation();
+    } catch (error) {
+      if (
+        !isSqliteLockedError(error) ||
+        attempt === attempts
+      ) {
+        throw error;
+      }
+
+      await wait(
+        150 * attempt,
+      );
+    }
+  }
+
+  throw new Error(
+    "SQLite retry unexpectedly ended.",
+  );
 }
 
 function TrackingBadges({
@@ -2180,10 +2719,16 @@ const vestigialUncertain =
 function MainApp() {
   const [uniques, setUniques] = useState<UniqueEntry[]>([]);
   const [sourceFile, setSourceFile] = useState("");
+  const [sourceImportMode, setSourceImportMode] =
+    useState<ImportMode | null>(null);
   const [appError, setAppError] = useState("");
   const [isImporting, setIsImporting] = useState(false);
   const [database, setDatabase] = useState<Database | null>(null);
   const [databaseReady, setDatabaseReady] = useState(false);
+  const [
+  closePromptOpen,
+  setClosePromptOpen,
+] = useState(false);
   const [collectionProfiles, setCollectionProfiles] = useState<
     CollectionProfile[]
   >([]);
@@ -2221,6 +2766,21 @@ function MainApp() {
   const [catalogueCheckMessage, setCatalogueCheckMessage] =
     useState("Catalogue updates have not been checked yet.");
 
+  const [
+    discoveryNotices,
+    setDiscoveryNotices,
+  ] = useState<TrackerDiscoveryNotice[]>([]);
+  const [
+    discoveryDetailsExpanded,
+    setDiscoveryDetailsExpanded,
+  ] = useState(false);
+  const [
+    devDiscoveryNotice,
+    setDevDiscoveryNotice,
+  ] = useState<TrackerDiscoveryNotice | null>(
+    null,
+  );
+
   const [importMatchSummary, setImportMatchSummary] =
     useState<ImportReconciliationSummary | null>(null);
 
@@ -2228,10 +2788,16 @@ function MainApp() {
     useState<PendingImport | null>(null);
   const [pendingImportMode, setPendingImportMode] =
     useState<ImportMode>("status-list");
+  const [
+    otherImportModesOpen,
+    setOtherImportModesOpen,
+  ] = useState(false);
   const [pendingImportProfileId, setPendingImportProfileId] =
     useState(STANDARD_PROFILE_ID);
   const [missingOnlySummary, setMissingOnlySummary] =
     useState<MissingOnlyInferenceSummary | null>(null);
+  const [colorCodedSummary, setColorCodedSummary] =
+    useState<ColorCodedImportSummary | null>(null);
   const [importDetailsExpanded, setImportDetailsExpanded] =
     useState(false);
 
@@ -2302,17 +2868,39 @@ const [
   }
 
   const activeProfile = useMemo(
-    () =>
-      collectionProfiles.find(
-        (profile) => profile.id === activeProfileId,
-      ) ?? null,
-    [collectionProfiles, activeProfileId],
-  );
+  () =>
+    collectionProfiles.find(
+      (profile) => profile.id === activeProfileId,
+    ) ?? null,
+  [collectionProfiles, activeProfileId],
+);
 
-  async function initializeLiveLeagues(
+useEffect(() => {
+  let unlistenClose:
+    | (() => void)
+    | undefined;
+
+  void listen<void>(
+    "main-close-requested",
+    () => {
+      setClosePromptOpen(true);
+    },
+  ).then((unlisten) => {
+    unlistenClose = unlisten;
+  });
+
+  return () => {
+    unlistenClose?.();
+  };
+}, []);
+
+async function initializeLiveLeagues(
     db: Database,
     profiles: CollectionProfile[],
   ) {
+    const newlyDetectedLeagues:
+      PendingLeagueDetection[] = [];
+
     try {
       const detectedLeagues =
         await fetchActiveChallengeLeagues();
@@ -2610,6 +3198,25 @@ const [
           kind: "challenge",
           isArchived: false,
         });
+
+        const newLeagueDetection = {
+          profileId,
+          leagueName: league.id,
+        };
+
+        newlyDetectedLeagues.push(
+          newLeagueDetection,
+        );
+
+        /*
+         * Save the pending announcement immediately. If a later
+         * league-startup step or Wiki request fails, the next launch
+         * can still finish the refresh and show the notice.
+         */
+        await appendPendingLeagueDetections(
+          db,
+          [newLeagueDetection],
+        );
 
         nextSortOrder += 1;
       }
@@ -3669,8 +4276,22 @@ const isLegacyOnly =
     }
 
     try {
-      if (!force) {
-        const shouldCheck = await shouldCheckCatalogueNow(db);
+      const pendingLeagueDetections =
+        await readPendingLeagueDetections(
+          db,
+        );
+
+      const forceForNewLeague =
+        pendingLeagueDetections.length > 0;
+
+      if (
+        !force &&
+        !forceForNewLeague
+      ) {
+        const shouldCheck =
+          await shouldCheckCatalogueNow(
+            db,
+          );
 
         if (!shouldCheck) {
           return;
@@ -3679,41 +4300,269 @@ const isLegacyOnly =
 
       setCatalogueChecking(true);
       setAppError("");
-      setCatalogueCheckMessage("Checking PoE 2 Wiki for catalogue updates...");
+      setCatalogueCheckMessage(
+        forceForNewLeague
+          ? "New league detected. Refreshing the PoE 2 Wiki catalogue..."
+          : "Checking PoE 2 Wiki for catalogue updates...",
+      );
 
-      const result = await syncCatalogueFromPoeWiki(db);
+      /*
+       * Snapshot the tracker catalogue before the Wiki refresh.
+       * This lets the normal once-a-day check identify the exact
+       * entries that appeared since the previous successful scan.
+       */
+      const beforeCatalogue =
+        await loadTrackableImportCatalogue(
+          db,
+        );
 
-      await syncCatalogueFamiliesAndVariants(db);
+      const hadCatalogueBefore =
+        beforeCatalogue.length > 0;
+
+      const beforeIds =
+        new Set(
+          beforeCatalogue.map(
+            (item) => item.id,
+          ),
+        );
+
+      const result =
+        await syncCatalogueFromPoeWiki(
+          db,
+        );
+
+      await syncCatalogueFamiliesAndVariants(
+        db,
+      );
       await seedBuiltInSpecialVariants(db);
 
+      const afterCatalogue =
+        await loadTrackableImportCatalogue(
+          db,
+        );
+
+      /*
+       * Do not announce the entire catalogue as "new" on the
+       * very first canonical sync. On established installs,
+       * only IDs absent from the previous successful local
+       * catalogue count as newly discovered tracker entries.
+       */
+      const newlyDiscoveredRows =
+        hadCatalogueBefore
+          ? afterCatalogue.filter(
+              (item) =>
+                !beforeIds.has(
+                  item.id,
+                ),
+            )
+          : [];
+
+      const newlyDiscoveredItems:
+        TrackerDiscoveryItem[] =
+        newlyDiscoveredRows.map(
+          (item) => ({
+            id: item.id,
+            name: item.name,
+            itemType:
+              item.item_type,
+            variantLabel:
+              item.variant_label,
+            releaseVersion:
+              item.release_version,
+          }),
+        );
+
+      if (
+        pendingLeagueDetections.length >
+        0
+      ) {
+        /*
+         * A catalogue entry discovered as part of a new-league
+         * refresh starts as known Missing in Standard and in the
+         * newly-created league collection(s). Other already-running
+         * challenge profiles are left alone.
+         *
+         * If the Wiki had already been refreshed before the league
+         * was detected, there may be zero newlyDiscoveredItems. In
+         * that case we deliberately announce 0 rather than guessing
+         * that an older release-line entry belongs to this league.
+         */
+        if (
+          newlyDiscoveredItems.length >
+          0
+        ) {
+          const profileIds =
+            Array.from(
+              new Set([
+                STANDARD_PROFILE_ID,
+                ...pendingLeagueDetections.map(
+                  (entry) =>
+                    entry.profileId,
+                ),
+              ]),
+            );
+
+          for (
+            const profileId of
+            profileIds
+          ) {
+            for (
+              const item of
+              newlyDiscoveredItems
+            ) {
+              await db.execute(
+                `
+                  INSERT OR REPLACE INTO profile_collection_review (
+                    profile_id,
+                    unique_id,
+                    reviewed
+                  )
+                  VALUES (?, ?, 1)
+                `,
+                [
+                  profileId,
+                  item.id,
+                ],
+              );
+            }
+          }
+        }
+
+        const createdAt =
+          Date.now();
+
+        const leagueNotices:
+          TrackerDiscoveryNotice[] =
+          pendingLeagueDetections.map(
+            (entry) => ({
+              id:
+                `new-league:${entry.profileId}`,
+              kind:
+                "new-league" as const,
+              leagueName:
+                entry.leagueName,
+              profileId:
+                entry.profileId,
+              items:
+                newlyDiscoveredItems,
+              createdAt,
+            }),
+          );
+
+        const queued =
+          await appendDiscoveryNotices(
+            db,
+            leagueNotices,
+          );
+
+        setDiscoveryNotices(
+          queued,
+        );
+
+        /*
+         * Persist the finished notice before clearing the pending
+         * league marker. If the app closes before this point, the
+         * next launch will retry the catalogue refresh instead of
+         * losing the league announcement.
+         */
+        await clearPendingLeagueDetections(
+          db,
+        );
+      } else if (
+        newlyDiscoveredItems.length >
+        0
+      ) {
+        /*
+         * A unique discovered during an already-running league is
+         * intentionally left without profile_collection_review rows.
+         * That means it appears as Unreviewed in every collection
+         * until the player chooses a status.
+         */
+        const queued =
+          await appendDiscoveryNotices(
+            db,
+            [
+              {
+                id:
+                  `new-unique:${result.revision}`,
+                kind:
+                  "new-unique",
+                items:
+                  newlyDiscoveredItems,
+                createdAt:
+                  Date.now(),
+              },
+            ],
+          );
+
+        setDiscoveryNotices(
+          queued,
+        );
+      }
+
       const reconciliation =
-        await reconcileImportedCollection(db);
+        await reconcileImportedCollection(
+          db,
+        );
 
-      setImportMatchSummary(reconciliation);
+      setImportMatchSummary(
+        reconciliation,
+      );
 
-      await loadCollectionData(db, activeProfileId);
+      await loadCollectionData(
+        db,
+        activeProfileId,
+      );
 
-      const checkedTime = new Date(result.checkedAt).toLocaleString();
+      const checkedTime =
+        new Date(
+          result.checkedAt,
+        ).toLocaleString();
+
       setCatalogueCheckMessage(
         `Last checked ${checkedTime} \u2022 ${result.remoteItems.toLocaleString()} catalogue entries received.`,
       );
 
-      if (result.hasVisibleChanges) {
+      /*
+       * New entries get their own player-facing discovery popup.
+       * Keep the older generic catalogue-update popup for metadata
+       * changes that do not add a new tracker entry.
+       */
+      if (
+        result.hasVisibleChanges &&
+        pendingLeagueDetections.length ===
+          0 &&
+        newlyDiscoveredItems.length ===
+          0
+      ) {
         setCatalogueUpdate({
-          revision: result.revision,
-          label: result.label,
-          newFamilies: result.newFamilies,
-          newVariants: result.newVariants,
-          dropDisabled: result.dropDisabled,
-          updatedEntries: result.updatedEntries,
+          revision:
+            result.revision,
+          label:
+            result.label,
+          newFamilies:
+            result.newFamilies,
+          newVariants:
+            result.newVariants,
+          dropDisabled:
+            result.dropDisabled,
+          updatedEntries:
+            result.updatedEntries,
         });
-        setCatalogueUpdateOpen(true);
+        setCatalogueUpdateOpen(
+          true,
+        );
       }
     } catch (error) {
-      console.error("Could not update catalogue from PoE 2 Wiki:", error);
+      console.error(
+        "Could not update catalogue from PoE 2 Wiki:",
+        error,
+      );
 
       const message =
-        error instanceof Error ? error.message : String(error);
+        error instanceof Error
+          ? error.message
+          : String(error);
 
       setCatalogueCheckMessage(
         `Catalogue check failed: ${message}`,
@@ -3722,6 +4571,121 @@ const isLegacyOnly =
     } finally {
       setCatalogueChecking(false);
     }
+  }
+
+
+  const activeDiscoveryNotice =
+    devDiscoveryNotice ??
+    discoveryNotices[0] ??
+    null;
+
+  async function dismissDiscoveryNotice() {
+    if (devDiscoveryNotice) {
+      setDevDiscoveryNotice(null);
+      setDiscoveryDetailsExpanded(
+        false,
+      );
+      return;
+    }
+
+    if (
+      !database ||
+      !activeDiscoveryNotice
+    ) {
+      return;
+    }
+
+    const remaining =
+      discoveryNotices.slice(1);
+
+    try {
+      await saveDiscoveryNotices(
+        database,
+        remaining,
+      );
+
+      setDiscoveryNotices(
+        remaining,
+      );
+      setDiscoveryDetailsExpanded(
+        false,
+      );
+    } catch (error) {
+      console.error(
+        "Could not dismiss tracker discovery notice:",
+        error,
+      );
+    }
+  }
+
+  function showDevNewLeagueNotice() {
+    setSettingsOpen(false);
+    setDiscoveryDetailsExpanded(false);
+
+    setDevDiscoveryNotice({
+      id: "dev:new-league-popup",
+      kind: "new-league",
+      leagueName: "Test League",
+      profileId: "dev:test-league",
+      createdAt: Date.now(),
+      items: [
+        {
+          id: "dev:league-unique-1",
+          name: "Example Unique One",
+          itemType: "Ring",
+          variantLabel: null,
+          releaseVersion: "0.6",
+        },
+        {
+          id: "dev:league-unique-2",
+          name: "Example Unique Two",
+          itemType: "Helmet",
+          variantLabel: null,
+          releaseVersion: "0.6",
+        },
+        {
+          id: "dev:league-unique-3",
+          name: "Example Unique Three",
+          itemType: "Sword",
+          variantLabel: null,
+          releaseVersion: "0.6",
+        },
+        {
+          id: "dev:league-unique-4",
+          name: "Example Unique Four",
+          itemType: "Amulet",
+          variantLabel: "Alternate Variant",
+          releaseVersion: "0.6",
+        },
+        {
+          id: "dev:league-unique-5",
+          name: "Example Unique Five",
+          itemType: "Body Armour",
+          variantLabel: null,
+          releaseVersion: "0.6",
+        },
+      ],
+    });
+  }
+
+  function showDevMidLeagueUniqueNotice() {
+    setSettingsOpen(false);
+    setDiscoveryDetailsExpanded(false);
+
+    setDevDiscoveryNotice({
+      id: "dev:mid-league-unique-popup",
+      kind: "new-unique",
+      createdAt: Date.now(),
+      items: [
+        {
+          id: "dev:mid-league-unique-1",
+          name: "Example Newly Discovered Unique",
+          itemType: "Quarterstaff",
+          variantLabel: null,
+          releaseVersion: "0.5",
+        },
+      ],
+    });
   }
 
   async function acknowledgeCatalogueUpdate(reviewNewItems: boolean) {
@@ -3895,12 +4859,12 @@ const isLegacyOnly =
     try {
       /*
        * Hot reload can leave a stale registration owned by this app.
-       * unregister() only affects PoE 2 Collector's own registration.
+       * unregister() only affects PoE 2 Unique Tracker's own registration.
        */
       try {
         await unregister(newHotkey);
       } catch {
-        // Fine if PoE 2 Collector did not have it registered.
+        // Fine if PoE 2 Unique Tracker did not have it registered.
       }
 
       /*
@@ -4280,9 +5244,23 @@ useEffect(() => {
   useEffect(() => {
     async function initializeDatabase() {
       try {
-        const db = await Database.load("sqlite:poe2-collector.db");
+        const db = await Database.load(
+  "sqlite:poe2-collector.db",
+);
 
-        await ensureEditionAvailabilitySchema(
+await db.execute(
+  "PRAGMA journal_mode = WAL",
+);
+
+await db.execute(
+  "PRAGMA synchronous = NORMAL",
+);
+
+await db.execute(
+  "PRAGMA busy_timeout = 15000",
+);
+
+await ensureEditionAvailabilitySchema(
   db,
 );
 
@@ -4301,6 +5279,15 @@ useEffect(() => {
             value TEXT NOT NULL
           )
         `);
+
+        const savedDiscoveryNotices =
+          await readDiscoveryNotices(
+            db,
+          );
+
+        setDiscoveryNotices(
+          savedDiscoveryNotices,
+        );
 
         await db.execute(`
           CREATE TABLE IF NOT EXISTS unique_tracking (
@@ -4435,6 +5422,15 @@ setActiveProfileId(
           WHERE key = 'source_file'
         `);
 
+        const savedImportMode =
+          await db.select<
+            { value: string }[]
+          >(`
+            SELECT value
+            FROM app_meta
+            WHERE key = 'source_import_mode'
+          `);
+
         const savedSortMode = await db.select<{ value: string }[]>(`
           SELECT value
           FROM app_meta
@@ -4472,6 +5468,15 @@ setActiveProfileId(
     SELECT value
     FROM app_meta
     WHERE key = 'poe_lookup_hotkey'
+  `);
+
+  const hotkeyMigrationState =
+  await db.select<
+    { value: string }[]
+  >(`
+    SELECT value
+    FROM app_meta
+    WHERE key = 'poe2_hotkey_default_migrated_v1'
   `);
 
         if (savedStatusColors.length > 0) {
@@ -4519,14 +5524,50 @@ setActiveProfileId(
           );
         }
 
-        if (
-  savedLookupHotkey.length > 0 &&
-  savedLookupHotkey[0].value.trim()
+        let resolvedLookupHotkey =
+  savedLookupHotkey[0]?.value.trim() ||
+  DEFAULT_POE_LOOKUP_HOTKEY;
+
+if (
+  hotkeyMigrationState.length === 0
 ) {
-  setLookupHotkey(
-    savedLookupHotkey[0].value,
-  );
+  if (
+    resolvedLookupHotkey ===
+    OLD_DEFAULT_POE_LOOKUP_HOTKEY
+  ) {
+    resolvedLookupHotkey =
+      DEFAULT_POE_LOOKUP_HOTKEY;
+
+    await db.execute(
+      `
+        INSERT OR REPLACE INTO app_meta (
+          key,
+          value
+        )
+        VALUES (
+          'poe_lookup_hotkey',
+          ?
+        )
+      `,
+      [resolvedLookupHotkey],
+    );
+  }
+
+  await db.execute(`
+    INSERT OR REPLACE INTO app_meta (
+      key,
+      value
+    )
+    VALUES (
+      'poe2_hotkey_default_migrated_v1',
+      'yes'
+    )
+  `);
 }
+
+setLookupHotkey(
+  resolvedLookupHotkey,
+);
 
         await loadCollectionData(
           db,
@@ -4535,6 +5576,31 @@ setActiveProfileId(
 
         if (savedSource.length > 0) {
           setSourceFile(savedSource[0].value);
+        }
+
+        const savedImportModeValue =
+          savedImportMode[0]?.value;
+
+        if (
+          savedImportModeValue ===
+            "status-list" ||
+          savedImportModeValue ===
+            "missing-only" ||
+          savedImportModeValue ===
+            "color-coded-list"
+        ) {
+          setSourceImportMode(
+            savedImportModeValue,
+          );
+        }
+        else if (
+          savedImportModeValue ===
+          "ole-color-list"
+        ) {
+          // Compatibility with pre-release color-coded import tests.
+          setSourceImportMode(
+            "color-coded-list",
+          );
         }
 
         if (
@@ -4548,13 +5614,6 @@ setActiveProfileId(
         setDatabase(db);
         setDatabaseReady(true);
 
-        void initializeLiveLeagues(
-  db,
-  profileState.profiles,
-).then((liveProfiles) => {
-  setCollectionProfiles(liveProfiles);
-});
-
         if (addedSpecialVariants > 0) {
           setCatalogueUpdate({
             revision: "special-variants-v1",
@@ -4567,9 +5626,32 @@ setActiveProfileId(
           setCatalogueUpdateOpen(true);
         }
 
-        // Open immediately with the local database, then check the live
-        // catalogue in the background at most once every 24 hours.
-        void runCatalogueCheck(db, false);
+        /*
+ * League detection and catalogue syncing can both write
+ * to SQLite. Run them one after the other so they do not
+ * compete for the database during startup.
+ *
+ * If a new league was created, initializeLiveLeagues()
+ * leaves a persisted pending marker. runCatalogueCheck()
+ * sees that marker and forces a fresh Wiki scan even when
+ * the normal once-a-day catalogue check is not due yet.
+ */
+void (async () => {
+  const liveProfiles =
+    await initializeLiveLeagues(
+      db,
+      profileState.profiles,
+    );
+
+  setCollectionProfiles(
+    liveProfiles,
+  );
+
+  await runCatalogueCheck(
+    db,
+    false,
+  );
+})();
       } catch (error) {
         console.error(error);
 
@@ -4781,7 +5863,7 @@ setActiveProfileId(
     OVERLAY_LABEL,
     {
       url: "index.html?overlay=1",
-      title: "PoE 2 Collector Lookup",
+      title: "PoE 2 Unique Tracker Lookup",
       width: OVERLAY_WIDTH,
       height: OVERLAY_HEIGHT,
       decorations: false,
@@ -5041,41 +6123,69 @@ async function showOverlayLoading(
       return;
     }
 
-    const standardTrackingRows =
-      await database.select<
-        { flag: string }[]
-      >(
-        `
-          SELECT flag
-          FROM profile_unique_tracking
-          WHERE
-            profile_id = ?
-            AND unique_id = ?
-        `,
-        [STANDARD_PROFILE_ID, localEntry.id],
-      );
+    const profileStateRows =
+  await database.select<
+    {
+      id: string;
+      name: string;
+      flag: string | null;
+    }[]
+  >(
+    `
+      SELECT
+        profiles.id,
+        profiles.name,
+        tracking.flag
+      FROM collection_profiles profiles
+      LEFT JOIN profile_unique_tracking tracking
+        ON
+          tracking.profile_id = profiles.id
+          AND tracking.unique_id = ?
+      WHERE profiles.is_archived = 0
+      ORDER BY
+        profiles.sort_order ASC,
+        profiles.name ASC
+    `,
+    [localEntry.id],
+  );
 
-    const standardReviewRows =
-      await database.select<
-        { reviewed: number }[]
-      >(
-        `
-          SELECT reviewed
-          FROM profile_collection_review
-          WHERE
-            profile_id = ?
-            AND unique_id = ?
-        `,
-        [STANDARD_PROFILE_ID, localEntry.id],
-      );
+const profileStatesById =
+  new Map<
+    string,
+    OverlayProfileState
+  >();
 
-    const standardFlags =
-      standardTrackingRows
-        .map((row) => row.flag)
-        .filter(isTrackingFlag);
+for (const row of profileStateRows) {
+  let profileState =
+    profileStatesById.get(row.id);
 
-    const standardReviewed =
-      standardReviewRows[0]?.reviewed === 1;
+  if (!profileState) {
+    profileState = {
+      id: row.id,
+      name: row.name,
+      flags: [],
+    };
+
+    profileStatesById.set(
+      row.id,
+      profileState,
+    );
+  }
+
+  if (
+    row.flag &&
+    isTrackingFlag(row.flag)
+  ) {
+    profileState.flags.push(
+      row.flag,
+    );
+  }
+}
+
+const profileStates =
+  Array.from(
+    profileStatesById.values(),
+  );
 
     const payload: OverlayPayload = {
       trackingProfileId: activeProfileId,
@@ -5087,8 +6197,7 @@ async function showOverlayLoading(
       itemType: result.itemType,
       variantLabel: result.variantLabel,
       edition: result.edition,
-      standardFlags,
-      standardReviewed,
+      profileStates,
       trackingFlags: [...localEntry.flags],
       trackingReviewed: localEntry.reviewed,
       editionAvailability:
@@ -5217,7 +6326,7 @@ try {
         );
       } else {
         setHotkeyMessage(
-          "The hotkey copied an item, but PoE 2 Collector could not match it cleanly.",
+          "The hotkey copied an item, but PoE 2 Unique Tracker could not match it cleanly.",
         );
 
         await emit<string>(
@@ -5385,20 +6494,32 @@ try {
     try {
       setAppError("");
 
-      await database.execute(
-        `
-          INSERT OR REPLACE INTO app_meta (key, value)
-          VALUES ('active_collection_profile', ?)
-        `,
-        [profileId],
-      );
+      await withSqliteLockRetry(
+  async () => {
+    await database.execute(
+      `
+        INSERT OR REPLACE INTO app_meta (
+          key,
+          value
+        )
+        VALUES (
+          'active_collection_profile',
+          ?
+        )
+      `,
+      [profileId],
+    );
 
-      setActiveProfileId(profileId);
+    await loadCollectionData(
+      database,
+      profileId,
+    );
+  },
+);
 
-      await loadCollectionData(
-        database,
-        profileId,
-      );
+setActiveProfileId(
+  profileId,
+);
     } catch (error) {
       console.error(
         "Could not switch collection profile:",
@@ -5680,7 +6801,16 @@ try {
     rows: ParsedImportRow[],
     mode: ImportMode,
   ): UniqueEntry[] {
-    return rows.map((row) => {
+    const rowsToImport =
+      mode === "color-coded-list"
+        ? rows.filter(
+            (row) =>
+              row.colorCodedStatus !==
+              "unreviewed",
+          )
+        : rows;
+
+    return rowsToImport.map((row) => {
       let normalizedStatus = "Missing";
 
       if (mode === "status-list") {
@@ -5700,6 +6830,23 @@ try {
         } else {
           normalizedStatus = "Unreviewed";
         }
+      } else if (mode === "color-coded-list") {
+        if (
+          row.colorCodedStatus ===
+          "league-owned"
+        ) {
+          normalizedStatus =
+            COLOR_CODED_IMPORT_STATUS.leagueOwned;
+        } else if (
+          row.colorCodedStatus ===
+          "standard-owned"
+        ) {
+          normalizedStatus =
+            COLOR_CODED_IMPORT_STATUS.standardOwned;
+        } else {
+          normalizedStatus =
+            COLOR_CODED_IMPORT_STATUS.missing;
+        }
       }
 
       return {
@@ -5710,7 +6857,12 @@ try {
         itemType: row.itemType,
         variantLabel: null,
         importStatus: normalizedStatus,
-        flags: statusToFlags(normalizedStatus),
+        flags:
+          mode === "color-coded-list"
+            ? []
+            : statusToFlags(
+                normalizedStatus,
+              ),
         editionAvailability: {
           ...DEFAULT_EDITION_AVAILABILITY,
         },
@@ -5818,6 +6970,492 @@ try {
         commit: true,
       });
     }
+  }
+
+  async function applyColorCodedImportToProfiles(
+    db: Database,
+    importedRows: ParsedImportRow[],
+    leagueProfileId: string,
+  ): Promise<ColorCodedImportSummary> {
+    const activeProfiles =
+      await db.select<
+        {
+          id: string;
+          name: string;
+          kind: string;
+        }[]
+      >(`
+        SELECT
+          id,
+          name,
+          kind
+        FROM collection_profiles
+        WHERE is_archived = 0
+      `);
+
+    const leagueProfile =
+      activeProfiles.find(
+        (profile) =>
+          profile.id ===
+            leagueProfileId &&
+          profile.kind ===
+            "challenge",
+      );
+
+    if (!leagueProfile) {
+      throw new Error(
+        "This color-coded list needs an active challenge league for the light-green entries.",
+      );
+    }
+
+    const namedRows =
+      importedRows.filter(
+        (row) =>
+          row.colorCodedStatus !==
+          "unreviewed",
+      );
+
+    const reconciliationRows =
+      await db.select<
+        {
+          import_id: string;
+          canonical_variant_id:
+            string | null;
+          status: string;
+        }[]
+      >(`
+        SELECT
+          import_id,
+          canonical_variant_id,
+          status
+        FROM import_reconciliation
+      `);
+
+    const matchedByImportId =
+      new Map<string, string>();
+
+    for (
+      const row of
+      reconciliationRows
+    ) {
+      if (
+        row.status === "matched" &&
+        row.canonical_variant_id
+      ) {
+        matchedByImportId.set(
+          row.import_id,
+          row.canonical_variant_id,
+        );
+      }
+    }
+
+    const matchedCanonicalIds =
+      new Set(
+        matchedByImportId.values(),
+      );
+
+    const statements:
+      SqliteTransactionStatement[] =
+      [];
+
+    let standardOwned = 0;
+    let leagueOwned = 0;
+    let missing = 0;
+
+    for (const row of namedRows) {
+      const uniqueId =
+        matchedByImportId.get(
+          row.id,
+        );
+
+      if (!uniqueId) {
+        continue;
+      }
+
+      /*
+       * sheet describes the complete current state:
+       * black = Missing everywhere,
+       * light green = owned only in the selected league,
+       * green-on-green = owned only in Standard.
+       *
+       * Archived league history is deliberately left alone.
+       */
+      statements.push(
+        {
+          sql: `
+            DELETE FROM profile_unique_tracking
+            WHERE
+              unique_id = ?
+              AND profile_id IN (
+                SELECT id
+                FROM collection_profiles
+                WHERE is_archived = 0
+              )
+          `,
+          params: [uniqueId],
+        },
+        {
+          sql: `
+            INSERT OR REPLACE INTO profile_collection_review (
+              profile_id,
+              unique_id,
+              reviewed
+            )
+            SELECT
+              id,
+              ?,
+              1
+            FROM collection_profiles
+            WHERE is_archived = 0
+          `,
+          params: [uniqueId],
+        },
+      );
+
+      if (
+        row.colorCodedStatus ===
+        "standard-owned"
+      ) {
+        statements.push({
+          sql: `
+            INSERT OR REPLACE INTO profile_unique_tracking (
+              profile_id,
+              unique_id,
+              flag
+            )
+            VALUES (?, ?, 'owned')
+          `,
+          params: [
+            STANDARD_PROFILE_ID,
+            uniqueId,
+          ],
+        });
+
+        standardOwned += 1;
+      } else if (
+        row.colorCodedStatus ===
+        "league-owned"
+      ) {
+        statements.push({
+          sql: `
+            INSERT OR REPLACE INTO profile_unique_tracking (
+              profile_id,
+              unique_id,
+              flag
+            )
+            VALUES (?, ?, 'owned')
+          `,
+          params: [
+            leagueProfileId,
+            uniqueId,
+          ],
+        });
+
+        leagueOwned += 1;
+      } else {
+        missing += 1;
+      }
+    }
+
+    /*
+     * "???" rows are deliberately unnamed by Path of Exile 2.
+     * Use their position between surrounding resolved names to
+     * identify the catalogue candidates that occupy that gap.
+     *
+     * We never guess ownership for those candidates: every
+     * candidate in the gap becomes Unreviewed across all active
+     * profiles. If no catalogue candidate can be located, the
+     * placeholder is reported but no collection data is changed.
+     */
+    const catalogue =
+      await loadTrackableImportCatalogue(
+        db,
+      );
+
+    const rowsBySheet =
+      new Map<
+        string,
+        ParsedImportRow[]
+      >();
+
+    for (const row of importedRows) {
+      const existing =
+        rowsBySheet.get(
+          row.sourceSheetName,
+        ) ?? [];
+
+      existing.push(row);
+
+      rowsBySheet.set(
+        row.sourceSheetName,
+        existing,
+      );
+    }
+
+    const unknownCandidateIds =
+      new Set<string>();
+
+    let unresolvedPlaceholders = 0;
+
+    for (
+      const sheetRows of
+      rowsBySheet.values()
+    ) {
+      const orderedRows =
+        [...sheetRows].sort(
+          (left, right) =>
+            left.sourceRowIndex -
+            right.sourceRowIndex,
+        );
+
+      const itemType =
+        orderedRows[0]?.itemType;
+
+      if (!itemType) {
+        continue;
+      }
+
+      const typeCatalogue =
+        catalogue
+          .filter(
+            (item) =>
+              item.item_type ===
+                itemType &&
+              item.is_legacy_only !== 1,
+          )
+          .sort(
+            (left, right) =>
+              importNameWithAlias(
+                left.name,
+              ).localeCompare(
+                importNameWithAlias(
+                  right.name,
+                ),
+              ) ||
+              (
+                left.variant_label ?? ""
+              ).localeCompare(
+                right.variant_label ??
+                  "",
+              ),
+          );
+
+      const catalogueIndexById =
+        new Map(
+          typeCatalogue.map(
+            (item, index) =>
+              [item.id, index] as const,
+          ),
+        );
+
+      let rowIndex = 0;
+
+      while (
+        rowIndex <
+        orderedRows.length
+      ) {
+        if (
+          orderedRows[rowIndex]
+            .colorCodedStatus !==
+          "unreviewed"
+        ) {
+          rowIndex += 1;
+          continue;
+        }
+
+        const runStart =
+          rowIndex;
+
+        while (
+          rowIndex <
+            orderedRows.length &&
+          orderedRows[rowIndex]
+            .colorCodedStatus ===
+            "unreviewed"
+        ) {
+          rowIndex += 1;
+        }
+
+        const runEnd =
+          rowIndex;
+
+        let previousCatalogueIndex:
+          | number
+          | null = null;
+
+        for (
+          let previous =
+            runStart - 1;
+          previous >= 0;
+          previous -= 1
+        ) {
+          const previousId =
+            matchedByImportId.get(
+              orderedRows[
+                previous
+              ].id,
+            );
+
+          const previousIndex =
+            previousId
+              ? catalogueIndexById.get(
+                  previousId,
+                )
+              : undefined;
+
+          if (
+            previousIndex !==
+            undefined
+          ) {
+            previousCatalogueIndex =
+              previousIndex;
+            break;
+          }
+        }
+
+        let nextCatalogueIndex:
+          | number
+          | null = null;
+
+        for (
+          let next = runEnd;
+          next <
+          orderedRows.length;
+          next += 1
+        ) {
+          const nextId =
+            matchedByImportId.get(
+              orderedRows[next].id,
+            );
+
+          const nextIndex =
+            nextId
+              ? catalogueIndexById.get(
+                  nextId,
+                )
+              : undefined;
+
+          if (
+            nextIndex !==
+            undefined
+          ) {
+            nextCatalogueIndex =
+              nextIndex;
+            break;
+          }
+        }
+
+        const startIndex =
+          previousCatalogueIndex ===
+          null
+            ? 0
+            : previousCatalogueIndex +
+              1;
+
+        const endIndex =
+          nextCatalogueIndex === null
+            ? typeCatalogue.length
+            : nextCatalogueIndex;
+
+        const candidates =
+          typeCatalogue
+            .slice(
+              startIndex,
+              endIndex,
+            )
+            .filter(
+              (item) =>
+                !matchedCanonicalIds.has(
+                  item.id,
+                ),
+            );
+
+        if (
+          candidates.length === 0
+        ) {
+          unresolvedPlaceholders +=
+            runEnd -
+            runStart;
+
+          continue;
+        }
+
+        for (
+          const candidate of
+          candidates
+        ) {
+          unknownCandidateIds.add(
+            candidate.id,
+          );
+        }
+      }
+    }
+
+    for (
+      const uniqueId of
+      unknownCandidateIds
+    ) {
+      statements.push(
+        {
+          sql: `
+            DELETE FROM profile_unique_tracking
+            WHERE
+              unique_id = ?
+              AND profile_id IN (
+                SELECT id
+                FROM collection_profiles
+                WHERE is_archived = 0
+              )
+          `,
+          params: [uniqueId],
+        },
+        {
+          sql: `
+            DELETE FROM profile_collection_review
+            WHERE
+              unique_id = ?
+              AND profile_id IN (
+                SELECT id
+                FROM collection_profiles
+                WHERE is_archived = 0
+              )
+          `,
+          params: [uniqueId],
+        },
+      );
+    }
+
+    if (statements.length > 0) {
+      await invoke(
+        "execute_sqlite_transaction",
+        {
+          statements,
+          commit: true,
+        },
+      );
+    }
+
+    const unresolvedNamedRows =
+      namedRows.filter(
+        (row) =>
+          !matchedByImportId.has(
+            row.id,
+          ),
+      ).length;
+
+    return {
+      kind: "color-coded-list",
+      standardOwned,
+      leagueOwned,
+      missing,
+      unknownCandidatesMarkedUnreviewed:
+        unknownCandidateIds.size,
+      unresolvedPlaceholders,
+      unresolvedNamedRows,
+      leagueProfileId,
+      leagueProfileName:
+        leagueProfile.name,
+    };
   }
 
   async function applyMissingOnlyInferenceToProfile(
@@ -6063,6 +7701,7 @@ try {
       )?.name ?? "Selected Collection";
 
     return {
+      kind: "missing-only",
       inferredOwned: inferredOwnedIds.length,
       explicitMissing: explicitMissingIds.size,
       protectedNewLeague,
@@ -6075,6 +7714,17 @@ try {
 
   function openImportReviewScreen() {
     setSettingsOpen(false);
+
+    if (
+      sourceImportMode ===
+      "color-coded-list"
+    ) {
+      setAppError(
+        "Manual row matching is disabled for this color-coded import because one spreadsheet row can affect Standard and a challenge league differently.",
+      );
+      return;
+    }
+
     setBatchImportReviewOpen(true);
   }
 
@@ -6084,7 +7734,7 @@ try {
     mode: ImportMode,
     parsedRows: ParsedImportRow[],
     destinationProfileId: string,
-  ): Promise<MissingOnlyInferenceSummary | null> {
+  ): Promise<ImportApplicationSummary | null> {
     if (!database) {
       throw new Error(
         "The local database is not ready yet.",
@@ -6212,13 +7862,20 @@ try {
       [mode],
     );
 
+    setSourceImportMode(mode);
+
     const canonicalReady =
       await isCanonicalCatalogueReady(database);
 
     if (!canonicalReady) {
-      if (mode === "missing-only") {
+      if (
+        mode === "missing-only" ||
+        mode === "color-coded-list"
+      ) {
         throw new Error(
-          "Missing-only imports need the canonical catalogue before ownership can be inferred.",
+          mode === "color-coded-list"
+            ? "The color-coded import needs the canonical catalogue before the tracker can safely match names and ??? placeholders."
+            : "Missing-only imports need the canonical catalogue before ownership can be inferred.",
         );
       }
 
@@ -6231,6 +7888,14 @@ try {
       );
 
     setImportMatchSummary(reconciliation);
+
+    if (mode === "color-coded-list") {
+      return applyColorCodedImportToProfiles(
+        database,
+        parsedRows,
+        destinationProfileId,
+      );
+    }
 
     await applyImportedMatchesToProfile(
       database,
@@ -6257,6 +7922,17 @@ try {
       setIsImporting(true);
       setAppError("");
 
+      if (
+        pendingImportMode ===
+          "color-coded-list" &&
+        pendingImportProfileId ===
+          STANDARD_PROFILE_ID
+      ) {
+        throw new Error(
+          "Choose the challenge league that the light-green entries belong to.",
+        );
+      }
+
       const imported = buildImportedEntries(
         pendingImport.rows,
         pendingImportMode,
@@ -6270,19 +7946,38 @@ try {
         pendingImportProfileId,
       );
 
-      if (pendingImportProfileId === activeProfileId) {
+      if (
+        pendingImportMode ===
+          "color-coded-list" ||
+        pendingImportProfileId ===
+          activeProfileId
+      ) {
         await loadCollectionData(
           database,
           activeProfileId,
         );
       }
 
-      setSourceFile(pendingImport.fileName);
+      setSourceFile(
+        pendingImport.fileName,
+      );
       setPendingImport(null);
       setImportDetailsExpanded(false);
 
-      if (summary) {
-        setMissingOnlySummary(summary);
+      if (
+        summary?.kind ===
+        "missing-only"
+      ) {
+        setMissingOnlySummary(
+          summary,
+        );
+      } else if (
+        summary?.kind ===
+        "color-coded-list"
+      ) {
+        setColorCodedSummary(
+          summary,
+        );
       }
     } catch (error) {
       console.error(error);
@@ -6305,7 +8000,9 @@ try {
     try {
       setAppError("");
       setMissingOnlySummary(null);
+      setColorCodedSummary(null);
       setImportDetailsExpanded(false);
+      setOtherImportModesOpen(false);
 
       const selected = await open({
         multiple: false,
@@ -6330,17 +8027,19 @@ try {
         type: "array",
         cellFormula: false,
         cellHTML: false,
+        cellStyles: true,
       });
 
       const parsedRows: ParsedImportRow[] = [];
       let missingOnlyScore = 0;
       let statusListScore = 0;
+      let oleColorEvidence = 0;
 
       for (const sheetName of workbook.SheetNames) {
         const itemType = normalizeImportItemType(sheetName);
 
-        // Auxiliary sheets such as Ole's ALT sheet are intentionally ignored.
-        // Only sheets that map to a real PoE 2 Collector item type are imported.
+        // Auxiliary sheets such as ALT sheet are intentionally ignored.
+        // Only sheets that map to a real PoE 2 Unique Tracker item type are imported.
         if (!itemType) {
           continue;
         }
@@ -6360,29 +8059,59 @@ try {
         });
 
         rows.forEach((row, rowIndex) => {
-          const name = String(row[0] ?? "").trim();
-          const secondColumn = String(row[1] ?? "").trim();
-          const thirdColumn = String(row[2] ?? "").trim();
+          const name = String(
+            row[0] ?? "",
+          ).trim();
+
+          const secondColumn =
+            String(
+              row[1] ?? "",
+            ).trim();
+
+          const thirdColumn =
+            String(
+              row[2] ?? "",
+            ).trim();
 
           if (rowIndex === 0) {
-            const firstHeader = normalizeImportName(name).replace(/:$/, "");
-            const secondHeader = normalizeImportName(secondColumn).replace(/:$/, "");
-            const thirdHeader = normalizeImportName(thirdColumn).replace(/:$/, "");
+            const firstHeader =
+              normalizeImportName(
+                name,
+              ).replace(/:$/, "");
+
+            const secondHeader =
+              normalizeImportName(
+                secondColumn,
+              ).replace(/:$/, "");
+
+            const thirdHeader =
+              normalizeImportName(
+                thirdColumn,
+              ).replace(/:$/, "");
 
             if (
-              secondHeader.includes("price") ||
-              thirdHeader.includes("acquisition")
+              secondHeader.includes(
+                "price",
+              ) ||
+              thirdHeader.includes(
+                "acquisition",
+              )
             ) {
               missingOnlyScore += 4;
             }
 
-            if (secondHeader.includes("status")) {
+            if (
+              secondHeader.includes(
+                "status",
+              )
+            ) {
               statusListScore += 4;
             }
 
             if (
               firstHeader === "name" ||
-              firstHeader === "item name"
+              firstHeader ===
+                "item name"
             ) {
               return;
             }
@@ -6390,6 +8119,36 @@ try {
 
           if (!name) {
             return;
+          }
+
+          const firstColumnCell =
+            sheet[
+              utils.encode_cell({
+                r: rowIndex,
+                c: 0,
+              })
+            ] as
+              | SheetJsStyledCell
+              | undefined;
+
+          const colorCodedStatus =
+            getColorCodedStatus(
+              firstColumnCell,
+              name,
+            );
+
+          if (
+            colorCodedStatus ===
+              "standard-owned" ||
+            colorCodedStatus ===
+              "league-owned"
+          ) {
+            oleColorEvidence += 3;
+          } else if (
+            colorCodedStatus ===
+            "unreviewed"
+          ) {
+            oleColorEvidence += 1;
           }
 
           if (
@@ -6401,10 +8160,16 @@ try {
           }
 
           parsedRows.push({
-            id: `${sheetName}-${rowIndex}-${name}`,
+            id:
+              `${sheetName}-${rowIndex}-${name}`,
             name,
             itemType,
             rawStatus: secondColumn,
+            sourceSheetName:
+              sheetName,
+            sourceRowIndex:
+              rowIndex,
+            colorCodedStatus,
           });
         });
       }
@@ -6424,25 +8189,63 @@ try {
       );
 
       const suggestedMode: ImportMode =
-        missingOnlyScore > statusListScore
-          ? "missing-only"
-          : "status-list";
+        oleColorEvidence >= 3
+          ? "color-coded-list"
+          : missingOnlyScore >
+              statusListScore
+            ? "missing-only"
+            : "status-list";
 
       setPendingImport({
         fileName,
         rows: parsedRows,
         suggestedMode,
-        latestReleaseLine: preview.latestReleaseLine,
+        latestReleaseLine:
+          preview.latestReleaseLine,
         protectedLeagueUniques:
           preview.protectedLeagueUniques,
       });
-      setPendingImportMode(suggestedMode);
+
+      setPendingImportMode(
+        suggestedMode,
+      );
+
+      setOtherImportModesOpen(
+        suggestedMode ===
+          "color-coded-list",
+      );
+
+      const activeChallengeProfile =
+        collectionProfiles.find(
+          (profile) =>
+            profile.id ===
+              activeProfileId &&
+            profile.kind ===
+              "challenge",
+        );
+
+      const firstChallengeProfile =
+        collectionProfiles.find(
+          (profile) =>
+            profile.kind ===
+            "challenge",
+        );
+
       setPendingImportProfileId(
-        collectionProfiles.some(
-          (profile) => profile.id === activeProfileId,
-        )
-          ? activeProfileId
-          : STANDARD_PROFILE_ID,
+        suggestedMode ===
+          "color-coded-list"
+          ? (
+              activeChallengeProfile ??
+              firstChallengeProfile
+            )?.id ??
+              STANDARD_PROFILE_ID
+          : collectionProfiles.some(
+                (profile) =>
+                  profile.id ===
+                  activeProfileId,
+              )
+            ? activeProfileId
+            : STANDARD_PROFILE_ID,
       );
     } catch (error) {
       console.error(error);
@@ -6452,8 +8255,34 @@ try {
           ? error.message
           : String(error),
       );
-    } finally {
+        } finally {
       setIsImporting(false);
+    }
+  }
+
+  async function minimizeMainWindow() {
+    setClosePromptOpen(false);
+
+    const mainWindow =
+      await WebviewWindow.getByLabel(
+        "main",
+      );
+
+    if (mainWindow) {
+      await mainWindow.minimize();
+    }
+  }
+
+  async function hideMainWindowToTray() {
+    setClosePromptOpen(false);
+
+    const mainWindow =
+      await WebviewWindow.getByLabel(
+        "main",
+      );
+
+    if (mainWindow) {
+      await mainWindow.hide();
     }
   }
 
@@ -6463,7 +8292,7 @@ try {
 
     <header className="app-header">
         <div>
-          <h1>PoE 2 Collector</h1>
+          <h1>PoE 2 Unique Tracker</h1>
           <p className="subtitle">
             Path of Exile 2 Unique Collection Tracker
           </p>
@@ -6526,7 +8355,7 @@ try {
 
           <span className="count">
             {databaseReady
-              ? `${uniques.length.toLocaleString()} uniques loaded`
+              ? `${uniques.length.toLocaleString()} catalogue entries loaded`
               : "Starting local database..."}
           </span>
 
@@ -6675,6 +8504,22 @@ try {
                 ))}
               </select>
             </div>
+            <button
+  type="button"
+  className="clear-filters-button"
+  disabled={
+    searchTerm === "" &&
+    statusFilter === "all" &&
+    typeFilter === "All"
+  }
+  onClick={() => {
+    setSearchTerm("");
+    setStatusFilter("all");
+    setTypeFilter("All");
+  }}
+>
+  Clear Filters
+</button>
           </section>
 
           <section className="collection-list">
@@ -6683,7 +8528,7 @@ try {
                 <h2>Collection</h2>
                 <p>
                   Showing {displayedUniques.length.toLocaleString()} of{" "}
-                  {uniques.length.toLocaleString()} uniques.
+                  {uniques.length.toLocaleString()} catalogue entries.
                 </p>
               </div>
 
@@ -6998,7 +8843,161 @@ editionSources={
     </div>
   )}
 
-      {catalogueUpdateOpen && catalogueUpdate && (
+      {activeDiscoveryNotice && (
+        <div className="catalogue-update-overlay">
+          <section
+            className="catalogue-update-modal"
+            style={{
+              width:
+                "min(720px, calc(100vw - 40px))",
+              maxWidth: 720,
+            }}
+          >
+            <div className="catalogue-update-heading">
+              <span className="catalogue-update-kicker">
+                {activeDiscoveryNotice.kind ===
+                "new-league"
+                  ? "NEW LEAGUE DETECTED"
+                  : activeDiscoveryNotice.items.length ===
+                      1
+                    ? "NEW UNIQUE ADDED TO TRACKER"
+                    : "NEW UNIQUES ADDED TO TRACKER"}
+              </span>
+
+              <h2>
+                {activeDiscoveryNotice.kind ===
+                "new-league"
+                  ? activeDiscoveryNotice.leagueName
+                  : activeDiscoveryNotice.items.length ===
+                      1
+                    ? activeDiscoveryNotice.items[0]?.name ??
+                      "New unique"
+                    : `${activeDiscoveryNotice.items.length} new uniques found`}
+              </h2>
+
+              <p>
+                {activeDiscoveryNotice.kind ===
+                "new-league"
+                  ? `${activeDiscoveryNotice.leagueName} is now available as a fresh collection. ${activeDiscoveryNotice.items.length} new ${
+                      activeDiscoveryNotice.items.length === 1
+                        ? "unique was"
+                        : "uniques were"
+                    } added to the tracker during the league refresh.`
+                  : `${activeDiscoveryNotice.items.length} new ${
+                      activeDiscoveryNotice.items.length === 1
+                        ? "unique was"
+                        : "uniques were"
+                    } found by the daily catalogue check. ${
+                      activeDiscoveryNotice.items.length === 1
+                        ? "It is"
+                        : "They are"
+                    } marked Unreviewed until you choose a collection status.`}
+              </p>
+            </div>
+
+            <div className="catalogue-update-stats">
+              <div>
+                <strong>
+                  {activeDiscoveryNotice.items.length}
+                </strong>
+                <span>
+                  {activeDiscoveryNotice.items.length ===
+                  1
+                    ? "new unique"
+                    : "new uniques"}
+                </span>
+              </div>
+
+              <div>
+                <strong>
+                  {activeDiscoveryNotice.kind ===
+                  "new-league"
+                    ? "Missing"
+                    : "Unreviewed"}
+                </strong>
+                <span>starting status</span>
+              </div>
+            </div>
+
+            {activeDiscoveryNotice.items.length >
+              0 && (
+              <>
+                <div className="catalogue-update-actions">
+                  <button
+                    type="button"
+                    className="catalogue-update-secondary"
+                    onClick={() =>
+                      setDiscoveryDetailsExpanded(
+                        (current) => !current,
+                      )
+                    }
+                  >
+                    {discoveryDetailsExpanded
+                      ? "Hide New Uniques"
+                      : "View New Uniques"}
+                  </button>
+                </div>
+
+                {discoveryDetailsExpanded && (
+                  <div
+                    style={{
+                      maxHeight: 280,
+                      overflowY: "auto",
+                      borderTop:
+                        "1px solid #3c352d",
+                    }}
+                  >
+                    {activeDiscoveryNotice.items.map(
+                      (item) => (
+                        <p
+                          className="catalogue-update-note"
+                          key={item.id}
+                        >
+                          <strong>
+                            {item.name}
+                          </strong>
+                          {item.variantLabel
+                            ? ` \u2014 ${item.variantLabel}`
+                            : ""}
+                          {" \u2022 "}
+                          {item.itemType}
+                        </p>
+                      ),
+                    )}
+                  </div>
+                )}
+              </>
+            )}
+
+            {activeDiscoveryNotice.kind ===
+              "new-league" &&
+              activeDiscoveryNotice.items.length ===
+                0 && (
+                <p className="catalogue-update-note">
+                  No new catalogue entries were discovered
+                  in this refresh. The league collection was
+                  still created normally.
+                </p>
+              )}
+
+            <div className="catalogue-update-actions">
+              <button
+                type="button"
+                className="catalogue-update-primary"
+                onClick={() =>
+                  void dismissDiscoveryNotice()
+                }
+              >
+                Got it
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
+
+      {!activeDiscoveryNotice &&
+        catalogueUpdateOpen &&
+        catalogueUpdate && (
         <div className="catalogue-update-overlay">
           <section className="catalogue-update-modal">
             <div className="catalogue-update-heading">
@@ -7033,7 +9032,7 @@ editionSources={
 
             <p className="catalogue-update-note">
               New catalogue entries remain Unreviewed until you tell
-              PoE 2 Collector whether you have them.
+              PoE 2 Unique Tracker whether you have them.
             </p>
 
             <div className="catalogue-update-actions">
@@ -7071,7 +9070,7 @@ editionSources={
               </span>
               <h2>How does this spreadsheet track uniques?</h2>
               <p>
-                PoE 2 Collector detected a likely format, but you choose how the
+                PoE 2 Unique Tracker detected a likely format, but you choose how the
                 spreadsheet should be interpreted before anything is changed.
               </p>
             </div>
@@ -7121,6 +9120,82 @@ editionSources={
                   }
                 />
               </label>
+
+
+              <button
+                type="button"
+                className="catalogue-update-secondary"
+                style={{
+                  justifySelf: "start",
+                  marginTop: 2,
+                }}
+                onClick={() =>
+                  setOtherImportModesOpen(
+                    (current) => !current,
+                  )
+                }
+              >
+                Other
+                {pendingImport.suggestedMode ===
+                  "color-coded-list" && (
+                  <>
+                    {" "}
+                    <span className="legacy-badge">
+                      DETECTED
+                    </span>
+                  </>
+                )}
+              </button>
+
+              {otherImportModesOpen && (
+                <label className="settings-toggle-row">
+                  <span>
+                    <strong>Color-coded list</strong>
+                    {pendingImport.suggestedMode ===
+                      "color-coded-list" && (
+                      <>
+                        {" "}
+                        <span className="legacy-badge">
+                          DETECTED
+                        </span>
+                      </>
+                    )}
+                    <br />
+                    <small>
+                      Special format using black/white, light-green text,
+                      and green-on-green cells. Unknown ??? entries stay
+                      Unreviewed.
+                    </small>
+                  </span>
+                  <input
+                    type="radio"
+                    name="import-mode"
+                    checked={
+                      pendingImportMode ===
+                      "color-coded-list"
+                    }
+                    onChange={() => {
+                      setPendingImportMode(
+                        "color-coded-list",
+                      );
+
+                      if (
+                        pendingImportProfileId ===
+                        STANDARD_PROFILE_ID
+                      ) {
+                        setPendingImportProfileId(
+                          collectionProfiles.find(
+                            (profile) =>
+                              profile.kind ===
+                              "challenge",
+                          )?.id ??
+                            STANDARD_PROFILE_ID,
+                        );
+                      }
+                    }}
+                  />
+                </label>
+              )}
             </div>
 
             <div
@@ -7134,7 +9209,10 @@ editionSources={
                 className="settings-help"
                 htmlFor="spreadsheet-import-destination"
               >
-                Save imported collection to
+                {pendingImportMode ===
+                "color-coded-list"
+                  ? "Light-green entries belong to"
+                  : "Save imported collection to"}
               </label>
               <select
                 id="spreadsheet-import-destination"
@@ -7147,23 +9225,71 @@ editionSources={
                   )
                 }
               >
-                {collectionProfiles.map((profile) => (
-                  <option
-                    key={profile.id}
-                    value={profile.id}
-                  >
-                    {profile.name}
-                  </option>
-                ))}
+                {pendingImportMode ===
+                  "color-coded-list" &&
+                  pendingImportProfileId ===
+                    STANDARD_PROFILE_ID && (
+                    <option
+                      value={
+                        STANDARD_PROFILE_ID
+                      }
+                      disabled
+                    >
+                      Choose a challenge league
+                    </option>
+                  )}
+
+                {collectionProfiles
+                  .filter(
+                    (profile) =>
+                      pendingImportMode !==
+                        "color-coded-list" ||
+                      profile.kind ===
+                        "challenge",
+                  )
+                  .map((profile) => (
+                    <option
+                      key={profile.id}
+                      value={profile.id}
+                    >
+                      {profile.name}
+                    </option>
+                  ))}
               </select>
               <p
                 className="catalogue-update-note"
                 style={{ margin: 0 }}
               >
-                The spreadsheet and any safe missing-list inference will only
-                change this collection.
+                {pendingImportMode ===
+                "color-coded-list"
+                  ? "Black entries become Missing in every active collection. Light green becomes Owned only in this league. Green-on-green becomes Owned only in Standard. Archived league history is left untouched."
+                  : "The spreadsheet and any safe missing-list inference will only change this collection."}
               </p>
             </div>
+
+            {pendingImportMode ===
+              "color-coded-list" && (
+              <div
+                style={{
+                  marginTop: 14,
+                  border: "1px solid rgba(255,255,255,0.12)",
+                  borderRadius: 10,
+                  padding: 14,
+                }}
+              >
+                <h3 style={{ marginTop: 0 }}>
+                  Color rules
+                </h3>
+
+                <p className="settings-help">
+                  Black on white = Missing everywhere. Light-green text on
+                  white = Owned only in the selected league. Dark-green text
+                  on a green background = Owned only in Standard. Rows named
+                  ??? are matched by their position between surrounding names
+                  and marked Unreviewed rather than Missing or Owned.
+                </p>
+              </div>
+            )}
 
             {pendingImportMode === "missing-only" && (
               <div
@@ -7184,7 +9310,7 @@ editionSources={
                       The newest catalogue release is {pendingImport.latestReleaseLine}.
                       Uniques introduced in that release are <strong>not</strong>
                       assumed Owned just because they are absent from this older
-                      spreadsheet. PoE 2 Collector leaves their existing collection
+                      spreadsheet. PoE 2 Unique Tracker leaves their existing collection
                       state alone instead of inferring Owned.
                     </p>
 
@@ -7247,7 +9373,7 @@ editionSources={
                   </>
                 ) : (
                   <p className="catalogue-update-note">
-                    PoE 2 Collector could not determine the newest release from
+                    PoE 2 Unique Tracker could not determine the newest release from
                     catalogue metadata. For safety, it will not infer any Owned
                     items from absence until that information is available.
                   </p>
@@ -7279,14 +9405,28 @@ editionSources={
               <button
                 type="button"
                 className="catalogue-update-primary"
-                disabled={isImporting}
-                onClick={() => void confirmPendingImport()}
+                disabled={
+                  isImporting ||
+                  (
+                    pendingImportMode ===
+                      "color-coded-list" &&
+                    pendingImportProfileId ===
+                      STANDARD_PROFILE_ID
+                  )
+                }
+                onClick={() =>
+                  void confirmPendingImport()
+                }
               >
                 {isImporting
                   ? "Importing..."
-                  : pendingImportMode === "missing-only"
+                  : pendingImportMode ===
+                      "missing-only"
                     ? "Import Missing-Only List"
-                    : "Import Status List"}
+                    : pendingImportMode ===
+                        "color-coded-list"
+                      ? "Import Color-Coded List"
+                      : "Import Status List"}
               </button>
             </div>
           </section>
@@ -7308,7 +9448,7 @@ editionSources={
               </span>
               <h2>Collection inferred safely</h2>
               <p>
-                PoE 2 Collector used the missing list to fill {
+                PoE 2 Unique Tracker used the missing list to fill {
                   missingOnlySummary.destinationProfileName
                 } without pretending that uncertain or newly released uniques
                 are already owned.
@@ -7341,7 +9481,7 @@ editionSources={
                 <>
                   <p className="catalogue-update-note">
                     These uniques are new in release {missingOnlySummary.latestReleaseLine}
-                    and were not found in the spreadsheet, so PoE 2 Collector did
+                    and were not found in the spreadsheet, so PoE 2 Unique Tracker did
                     <strong> not</strong> mark them Owned.
                   </p>
 
@@ -7419,6 +9559,97 @@ editionSources={
         </div>
       )}
 
+      {colorCodedSummary && (
+        <div className="catalogue-update-overlay">
+          <section
+            className="catalogue-update-modal"
+            style={{
+              width: "min(760px, calc(100vw - 40px))",
+              maxWidth: 760,
+            }}
+          >
+            <div className="catalogue-update-heading">
+              <span className="catalogue-update-kicker">
+                COLOR-CODED IMPORT COMPLETE
+              </span>
+
+              <h2>
+                Standard + {colorCodedSummary.leagueProfileName}
+              </h2>
+
+              <p>
+                The color-coded spreadsheet was applied across the active
+                collections. Archived league history was left untouched.
+              </p>
+            </div>
+
+            <div className="catalogue-update-stats">
+              <div>
+                <strong>
+                  {colorCodedSummary.standardOwned}
+                </strong>
+                <span>Standard only</span>
+              </div>
+
+              <div>
+                <strong>
+                  {colorCodedSummary.leagueOwned}
+                </strong>
+                <span>
+                  {colorCodedSummary.leagueProfileName} only
+                </span>
+              </div>
+
+              <div>
+                <strong>
+                  {colorCodedSummary.missing}
+                </strong>
+                <span>Missing everywhere</span>
+              </div>
+
+              <div>
+                <strong>
+                  {
+                    colorCodedSummary.unknownCandidatesMarkedUnreviewed
+                  }
+                </strong>
+                <span>set Unreviewed</span>
+              </div>
+            </div>
+
+            {(
+              colorCodedSummary.unresolvedPlaceholders >
+                0 ||
+              colorCodedSummary.unresolvedNamedRows >
+                0
+            ) && (
+              <p className="catalogue-update-note">
+                {colorCodedSummary.unresolvedPlaceholders >
+                  0
+                  ? `${colorCodedSummary.unresolvedPlaceholders} ??? placeholder(s) could not be tied to a catalogue gap and were left unchanged. `
+                  : ""}
+                {colorCodedSummary.unresolvedNamedRows >
+                  0
+                  ? `${colorCodedSummary.unresolvedNamedRows} named row(s) did not match cleanly and were left unchanged.`
+                  : ""}
+              </p>
+            )}
+
+            <div className="catalogue-update-actions">
+              <button
+                type="button"
+                className="catalogue-update-primary"
+                onClick={() =>
+                  setColorCodedSummary(null)
+                }
+              >
+                Done
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
+
       {batchImportReviewOpen && database && (
   <ImportReviewModal
     database={database}
@@ -7442,6 +9673,58 @@ editionSources={
   />
 )}
 
+            {closePromptOpen && (
+        <div className="catalogue-update-overlay">
+          <section className="catalogue-update-modal">
+            <div className="catalogue-update-heading">
+              <span className="catalogue-update-kicker">
+                CLOSE TRACKER
+              </span>
+
+              <h2>What should the tracker do?</h2>
+
+              <p>
+                Minimize keeps the window on your taskbar.
+                Closing to tray hides the window while keeping
+                the in-game lookup hotkey running.
+              </p>
+            </div>
+
+            <div className="catalogue-update-actions">
+              <button
+                type="button"
+                className="catalogue-update-secondary"
+                onClick={() =>
+                  setClosePromptOpen(false)
+                }
+              >
+                Cancel
+              </button>
+
+              <button
+                type="button"
+                className="catalogue-update-secondary"
+                onClick={() =>
+                  void minimizeMainWindow()
+                }
+              >
+                Minimize
+              </button>
+
+              <button
+                type="button"
+                className="catalogue-update-primary"
+                onClick={() =>
+                  void hideMainWindowToTray()
+                }
+              >
+                Close to Tray
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
+
       {settingsOpen && (
         <div
           className="settings-overlay"
@@ -7454,7 +9737,7 @@ editionSources={
             <div className="settings-modal-header">
               <div>
                 <h2>Settings</h2>
-                <p>Customize how PoE 2 Collector looks and behaves.</p>
+                <p>Customize how PoE 2 Unique Tracker looks and behaves.</p>
               </div>
 
               <button
@@ -7717,9 +10000,11 @@ editionSources={
               <h3>Catalogue Updates</h3>
 
               <p className="settings-help">
-                PoE 2 Collector checks the PoE 2 Wiki catalogue in the background
-                at most once every 24 hours. Your local collection still works
-                normally while offline.
+                PoE 2 Unique Tracker checks the PoE 2 Wiki catalogue in the background
+                at most once every 24 hours. If a new unique appears during a
+                league, the tracker adds it as Unreviewed and tells you. A newly
+                detected league forces an immediate refresh instead. Your local
+                collection still works normally while offline.
               </p>
 
               <p className="catalogue-check-status">
@@ -7746,7 +10031,7 @@ editionSources={
               <h3>Imported Collection Matching</h3>
 
               <p className="settings-help">
-                Imported spreadsheets are reference data only. PoE 2 Collector
+                Imported spreadsheets are reference data only. PoE 2 Unique Tracker
                 matches their statuses onto the canonical Path of Exile 2
                 catalogue instead of creating catalogue entries from imported
                 names.
@@ -7790,19 +10075,25 @@ editionSources={
                   importMatchSummary.unmatched > 0) && (
                   <>
                     <p className="settings-help import-match-note">
-                      Nothing was guessed for uncertain rows.
-                      Review them manually to connect the spreadsheet
-                      entry to the correct canonical unique.
+                      {sourceImportMode ===
+                      "color-coded-list"
+                        ? "Uncertain named rows from the color-coded import were left unchanged. Manual matching is disabled for this format because a row can affect Standard and the selected challenge league differently."
+                        : "Nothing was guessed for uncertain rows. Review them manually to connect the spreadsheet entry to the correct canonical unique."}
                     </p>
 
-                    <button
-                      type="button"
-                      className="reset-settings-button"
-                      disabled={!database}
-                      onClick={openImportReviewScreen}
-                    >
-                      Review Matches
-                    </button>
+                    {sourceImportMode !==
+                      "color-coded-list" && (
+                      <button
+                        type="button"
+                        className="reset-settings-button"
+                        disabled={!database}
+                        onClick={
+                          openImportReviewScreen
+                        }
+                      >
+                        Review Matches
+                      </button>
+                    )}
                   </>
                 )}
             </div>
@@ -7810,12 +10101,39 @@ editionSources={
             {import.meta.env.DEV && (
               <>
             <div className="settings-section settings-divider-section">
+              <h3>Discovery Popup Tests</h3>
+
+              <p className="settings-help">
+                Temporary development tools. These only preview the
+                discovery popups and do not change or save collection data.
+              </p>
+
+              <div className="parser-test-actions">
+                <button
+                  type="button"
+                  className="reset-settings-button"
+                  onClick={showDevNewLeagueNotice}
+                >
+                  Test New League Popup
+                </button>
+
+                <button
+                  type="button"
+                  className="reset-settings-button"
+                  onClick={showDevMidLeagueUniqueNotice}
+                >
+                  Test Mid-League Unique Popup
+                </button>
+              </div>
+            </div>
+
+            <div className="settings-section settings-divider-section">
               <h3>Item Parser Test</h3>
 
               <p className="settings-help">
                 Temporary development tool: hover a unique in Path of Exile 2,
                 press Ctrl+C, paste the copied item text here, and see whether
-                PoE 2 Collector identifies the exact catalogue variant.
+                PoE 2 Unique Tracker identifies the exact catalogue variant.
               </p>
 
               <div

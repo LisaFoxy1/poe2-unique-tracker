@@ -265,13 +265,38 @@ h1 {
 
 .filter-panel {
   display: grid;
-  grid-template-columns: minmax(220px, 2fr) repeat(3, minmax(140px, 1fr));
+  grid-template-columns:
+  minmax(220px, 2fr)
+  repeat(3, minmax(140px, 1fr))
+  auto;
   gap: 12px;
   margin-top: 22px;
   padding: 18px;
   border: 1px solid #3c352d;
   border-radius: 12px;
   background: rgba(31, 28, 24, 0.92);
+}
+
+.clear-filters-button {
+  align-self: end;
+  min-height: 40px;
+  padding: 9px 14px;
+  border: 1px solid #4a4238;
+  border-radius: 7px;
+  background: #211e1a;
+  color: #aaa092;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.clear-filters-button:hover:not(:disabled) {
+  background: #2b2722;
+  color: #e4d8c6;
+}
+
+.clear-filters-button:disabled {
+  opacity: 0.4;
+  cursor: default;
 }
 
 .search-field,
@@ -1109,7 +1134,8 @@ button.tracking-badge:not(.active):hover {
 
 .poe-overlay-status-heading {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
+  gap: 12px;
   justify-content: space-between;
   margin-top: 14px;
   padding-top: 11px;
@@ -1121,6 +1147,9 @@ button.tracking-badge:not(.active):hover {
 }
 
 .poe-overlay-status-heading strong {
+  max-width: 280px;
+  text-align: right;
+  line-height: 1.35;
   color: #d8cec0;
   font-size: 10px;
 }
