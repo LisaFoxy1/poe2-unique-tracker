@@ -1161,11 +1161,14 @@ function statusToFlags(status: string): TrackingFlag[] {
   switch (status) {
     case "Owned":
       return ["owned"];
+
     case "Wearing":
-      return ["wearing"];
+      return ["owned", "wearing"];
+
     case "Owned Foil":
     case "Owned Rainbow":
       return ["owned", "foil"];
+
     default:
       return [];
   }
@@ -2231,9 +2234,9 @@ const hasUncertainEdition =
       !payload.trackingFlags.includes(flag);
 
     const enabledFlags: TrackingFlag[] =
-      enabled && flag === "foil"
-        ? ["owned", "foil"]
-        : [flag];
+  enabled && flag !== "owned"
+    ? ["owned", flag]
+    : [flag];
 
     setPayload((current) => {
   if (!current) {
@@ -2409,7 +2412,7 @@ const hasUncertainEdition =
           )}
           onClick={() => void toggleFlag("owned")}
         >
-          Normal
+          Owned
         </button>
 
         <button
@@ -5456,6 +5459,25 @@ if (canonicalReady) {
         const profileState =
   await initializeCollectionProfiles(db);
 
+  await db.execute(`
+  INSERT OR IGNORE INTO profile_unique_tracking (
+    profile_id,
+    unique_id,
+    flag
+  )
+  SELECT DISTINCT
+    profile_id,
+    unique_id,
+    'owned'
+  FROM profile_unique_tracking
+  WHERE flag IN (
+    'wearing',
+    'foil',
+    'foulborn',
+    'vestigial'
+  )
+`);
+
 setCollectionProfiles(
   profileState.profiles,
 );
@@ -6105,9 +6127,9 @@ async function showOverlayLoading(
     }
 
     const enabledFlags: TrackingFlag[] =
-      enabled && flag === "foil"
-        ? ["owned", "foil"]
-        : [flag];
+  enabled && flag !== "owned"
+    ? ["owned", flag]
+    : [flag];
 
     try {
       await database.execute(
@@ -6713,9 +6735,9 @@ setActiveProfileId(
       unique.flags.includes(flag);
 
     const enabledFlags: TrackingFlag[] =
-      !isActive && flag === "foil"
-        ? ["owned", "foil"]
-        : [flag];
+  !isActive && flag !== "owned"
+    ? ["owned", flag]
+    : [flag];
 
     try {
       setAppError("");
