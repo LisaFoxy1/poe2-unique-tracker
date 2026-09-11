@@ -1,6 +1,6 @@
 [package]
 name = "poe2-collector"
-version = "0.1.2"
+version = "0.1.3"
 description = "Path of Exile 2 unique collection tracker"
 authors = ["PoE Collector"]
 edition = "2021"
