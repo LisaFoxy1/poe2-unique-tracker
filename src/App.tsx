@@ -8232,21 +8232,15 @@ setActiveProfileId(
         );
 
       setPendingImportProfileId(
-        suggestedMode ===
-          "color-coded-list"
-          ? (
-              activeChallengeProfile ??
-              firstChallengeProfile
-            )?.id ??
-              STANDARD_PROFILE_ID
-          : collectionProfiles.some(
-                (profile) =>
-                  profile.id ===
-                  activeProfileId,
-              )
-            ? activeProfileId
-            : STANDARD_PROFILE_ID,
-      );
+  suggestedMode ===
+    "color-coded-list"
+    ? (
+        activeChallengeProfile ??
+        firstChallengeProfile
+      )?.id ??
+        STANDARD_PROFILE_ID
+    : STANDARD_PROFILE_ID,
+);
     } catch (error) {
       console.error(error);
 
@@ -9418,16 +9412,27 @@ editionSources={
                   void confirmPendingImport()
                 }
               >
-                {isImporting
-                  ? "Importing..."
-                  : pendingImportMode ===
-                      "missing-only"
-                    ? "Import Missing-Only List"
-                    : pendingImportMode ===
-                        "color-coded-list"
-                      ? "Import Color-Coded List"
-                      : "Import Status List"}
-              </button>
+  {isImporting
+    ? "Importing..."
+    : pendingImportMode ===
+        "color-coded-list"
+      ? `Import Standard + ${
+          collectionProfiles.find(
+            (profile) =>
+              profile.id ===
+              pendingImportProfileId,
+          )?.name ??
+          "Challenge League"
+        }`
+      : `Import into ${
+          collectionProfiles.find(
+            (profile) =>
+              profile.id ===
+              pendingImportProfileId,
+          )?.name ??
+          "Selected Collection"
+        }`}
+</button>
             </div>
           </section>
         </div>
