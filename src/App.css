@@ -136,6 +136,46 @@ h1 {
   cursor: not-allowed;
 }
 
+.collection-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.collection-action-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.snapshot-button {
+  padding: 12px 18px;
+  border: 1px solid #51483c;
+  border-radius: 8px;
+  background: #211e1a;
+  color: #d9d0c2;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.snapshot-button:hover:not(:disabled) {
+  background: #2b2722;
+}
+
+.snapshot-button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.snapshot-message {
+  max-width: 420px;
+  color: #a79d8e;
+  font-size: 12px;
+  text-align: right;
+}
+
 .error-message {
   display: flex;
   flex-direction: column;

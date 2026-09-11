@@ -175,6 +175,60 @@ async fn execute_sqlite_transaction(
     Ok(())
 }
 
+#[tauri::command]
+fn write_tracker_backup(
+    directory: String,
+    file_name: String,
+    bytes: Vec<u8>,
+) -> Result<String, String> {
+    let directory_path =
+        std::path::PathBuf::from(directory);
+
+    if !directory_path.is_absolute() {
+        return Err(
+            "The backup folder must be an absolute path."
+                .to_string(),
+        );
+    }
+
+    if !directory_path.is_dir() {
+        return Err(
+            "The selected backup folder is no longer available."
+                .to_string(),
+        );
+    }
+
+    if file_name.is_empty()
+        || file_name.contains('/')
+        || file_name.contains('\\')
+    {
+        return Err(
+            "The backup filename is invalid."
+                .to_string(),
+        );
+    }
+
+    let target_path =
+        directory_path.join(file_name);
+
+    std::fs::write(
+        &target_path,
+        bytes,
+    )
+    .map_err(|error| {
+        format!(
+            "Could not create the local backup: {}",
+            error
+        )
+    })?;
+
+    Ok(
+        target_path
+            .to_string_lossy()
+            .to_string(),
+    )
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let mut builder =
@@ -276,10 +330,11 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
-            send_ctrl_c,
-            get_foreground_process_name,
-            execute_sqlite_transaction
-        ])
+    send_ctrl_c,
+    get_foreground_process_name,
+    execute_sqlite_transaction,
+    write_tracker_backup
+])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

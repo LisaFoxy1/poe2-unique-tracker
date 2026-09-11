@@ -13,6 +13,7 @@
     "sql:default",
     "sql:allow-execute",
     "fs:allow-read-file",
+    "fs:allow-write-file",
     {
   "identifier": "http:default",
   "allow": [

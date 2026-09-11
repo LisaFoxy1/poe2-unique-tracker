@@ -37,6 +37,13 @@ import {
 } from "./poeItemParser";
 import ImportReviewModal from "./ImportReviewModal";
 import AppUpdater from "./AppUpdater";
+import {
+  chooseTrackerSnapshot,
+  createTrackerBackup,
+  exportTrackerSnapshot,
+  restoreTrackerSnapshot,
+  type TrackerSnapshotPreview,
+} from "./trackerSnapshot";
 import "./App.css";
 
 type TrackingFlag =
@@ -184,6 +191,11 @@ type ImportMode =
   | "status-list"
   | "missing-only"
   | "color-coded-list";
+
+  type BackupMode =
+  | "automatic"
+  | "ask"
+  | "off";
 
 type ColorCodedStatus =
   | "missing"
@@ -2798,6 +2810,41 @@ function MainApp() {
     useState<MissingOnlyInferenceSummary | null>(null);
   const [colorCodedSummary, setColorCodedSummary] =
     useState<ColorCodedImportSummary | null>(null);
+    const [snapshotBusy, setSnapshotBusy] =
+  useState(false);
+
+const [snapshotMessage, setSnapshotMessage] =
+  useState("");
+
+  const [
+  snapshotRestoreError,
+  setSnapshotRestoreError,
+] = useState("");
+
+const [
+  pendingSnapshotRestore,
+  setPendingSnapshotRestore,
+] = useState<TrackerSnapshotPreview | null>(
+  null,
+);
+
+const [backupMode, setBackupMode] =
+  useState<BackupMode>("automatic");
+
+const [
+  backupSetupComplete,
+  setBackupSetupComplete,
+] = useState(false);
+
+const [backupFolder, setBackupFolder] =
+  useState("");
+
+const [backupSetupOpen, setBackupSetupOpen] =
+  useState(false);
+
+const [backupPromptOpen, setBackupPromptOpen] =
+  useState(false);
+
   const [importDetailsExpanded, setImportDetailsExpanded] =
     useState(false);
 
@@ -5461,6 +5508,24 @@ setActiveProfileId(
           WHERE key = 'show_legacy_variants'
         `);
 
+        const savedBackupMode =
+  await db.select<
+    { value: string }[]
+  >(`
+    SELECT value
+    FROM app_meta
+    WHERE key = 'restore_backup_mode'
+  `);
+
+const savedBackupFolder =
+  await db.select<
+    { value: string }[]
+  >(`
+    SELECT value
+    FROM app_meta
+    WHERE key = 'restore_backup_folder'
+  `);
+
         const savedLookupHotkey =
   await db.select<
     { value: string }[]
@@ -5523,6 +5588,27 @@ setActiveProfileId(
             savedShowLegacyVariants[0].value !== "false",
           );
         }
+
+        const savedBackupModeValue =
+  savedBackupMode[0]?.value;
+
+if (
+  savedBackupModeValue === "automatic" ||
+  savedBackupModeValue === "ask" ||
+  savedBackupModeValue === "off"
+) {
+  setBackupMode(
+    savedBackupModeValue,
+  );
+
+  setBackupSetupComplete(true);
+}
+
+if (savedBackupFolder.length > 0) {
+  setBackupFolder(
+    savedBackupFolder[0].value,
+  );
+}
 
         let resolvedLookupHotkey =
   savedLookupHotkey[0]?.value.trim() ||
@@ -8254,6 +8340,450 @@ setActiveProfileId(
     }
   }
 
+  async function handleExportTrackerSnapshot() {
+  if (!database || snapshotBusy) {
+    return;
+  }
+
+  try {
+    setSnapshotBusy(true);
+    setSnapshotMessage("");
+    setAppError("");
+
+    const result =
+      await exportTrackerSnapshot(database);
+
+    if (!result) {
+      return;
+    }
+
+    setSnapshotMessage(
+      `Saved ${result.profileCount} collections to ${result.fileName}.`,
+    );
+  } catch (error) {
+    console.error(
+      "Could not export tracker snapshot:",
+      error,
+    );
+
+    setAppError(
+      error instanceof Error
+        ? error.message
+        : String(error),
+    );
+  } finally {
+    setSnapshotBusy(false);
+  }
+}
+
+async function handleChooseTrackerSnapshot() {
+  if (snapshotBusy) {
+    return;
+  }
+
+  try {
+    setSnapshotBusy(true);
+    setSnapshotMessage("");
+    setSnapshotRestoreError("");
+    setAppError("");
+
+    const preview =
+      await chooseTrackerSnapshot();
+
+    if (!preview) {
+      return;
+    }
+
+    setPendingSnapshotRestore(
+      preview,
+    );
+  } catch (error) {
+    console.error(
+      "Could not open tracker snapshot:",
+      error,
+    );
+
+    setAppError(
+      error instanceof Error
+        ? error.message
+        : String(error),
+    );
+  } finally {
+    setSnapshotBusy(false);
+  }
+}
+
+async function persistBackupMode(
+  newMode: BackupMode,
+) {
+  if (!database) {
+    throw new Error(
+      "The local database is not ready yet.",
+    );
+  }
+
+  await database.execute(
+    `
+      INSERT OR REPLACE INTO app_meta (
+        key,
+        value
+      )
+      VALUES (
+        'restore_backup_mode',
+        ?
+      )
+    `,
+    [newMode],
+  );
+
+  setBackupMode(newMode);
+  setBackupSetupComplete(true);
+}
+
+async function chooseBackupFolder():
+  Promise<string | null> {
+  if (!database) {
+    throw new Error(
+      "The local database is not ready yet.",
+    );
+  }
+
+  const selected =
+    await open({
+      multiple: false,
+      directory: true,
+    });
+
+  if (
+    !selected ||
+    Array.isArray(selected)
+  ) {
+    return null;
+  }
+
+  await database.execute(
+    `
+      INSERT OR REPLACE INTO app_meta (
+        key,
+        value
+      )
+      VALUES (
+        'restore_backup_folder',
+        ?
+      )
+    `,
+    [selected],
+  );
+
+  setBackupFolder(selected);
+
+  return selected;
+}
+
+async function handleBackupModeSettingChange(
+  newMode: BackupMode,
+) {
+  try {
+    setAppError("");
+
+    await persistBackupMode(
+      newMode,
+    );
+  } catch (error) {
+    console.error(
+      "Could not save backup setting:",
+      error,
+    );
+
+    setAppError(
+      error instanceof Error
+        ? error.message
+        : String(error),
+    );
+  }
+}
+
+async function handleChooseBackupFolderSetting() {
+  try {
+    setAppError("");
+
+    const selected =
+      await chooseBackupFolder();
+
+    if (
+      selected &&
+      !backupSetupComplete
+    ) {
+      await persistBackupMode(
+        backupMode,
+      );
+    }
+  } catch (error) {
+    console.error(
+      "Could not choose backup folder:",
+      error,
+    );
+
+    setAppError(
+      error instanceof Error
+        ? error.message
+        : String(error),
+    );
+  }
+}
+
+async function performTrackerSnapshotRestore(
+  createBackup: boolean,
+  backupDirectory = backupFolder,
+) {
+  if (
+    !database ||
+    !pendingSnapshotRestore ||
+    snapshotBusy
+  ) {
+    return;
+  }
+
+  try {
+    setSnapshotBusy(true);
+setSnapshotMessage("");
+setSnapshotRestoreError("");
+setAppError("");
+
+    let savedBackupPath = "";
+
+    if (createBackup) {
+      if (!backupDirectory) {
+        throw new Error(
+          "Choose a backup folder before restoring this snapshot.",
+        );
+      }
+
+      const backup =
+        await createTrackerBackup(
+          database,
+          backupDirectory,
+        );
+
+      savedBackupPath =
+        backup.path;
+    }
+
+    const result =
+      await restoreTrackerSnapshot(
+        database,
+        pendingSnapshotRestore,
+      );
+
+    const profileState =
+      await initializeCollectionProfiles(
+        database,
+      );
+
+    setCollectionProfiles(
+      profileState.profiles,
+    );
+
+    setActiveProfileId(
+      profileState.activeProfileId,
+    );
+
+    await loadCollectionData(
+      database,
+      profileState.activeProfileId,
+    );
+
+    setSourceFile(
+      result.fileName,
+    );
+
+    setSourceImportMode(null);
+    setPendingSnapshotRestore(null);
+    setBackupSetupOpen(false);
+    setBackupPromptOpen(false);
+
+    setSnapshotMessage(
+      savedBackupPath
+        ? `Restored ${result.profileCount} collections from ${result.fileName}. Your previous tracker was backed up to ${savedBackupPath}.`
+        : `Restored ${result.profileCount} collections from ${result.fileName}.`,
+    );
+  } catch (error) {
+    console.error(
+      "Could not restore tracker snapshot:",
+      error,
+    );
+
+    setSnapshotRestoreError(
+  error instanceof Error
+    ? error.message
+    : String(error),
+);
+  } finally {
+    setSnapshotBusy(false);
+  }
+}
+
+async function beginTrackerSnapshotRestore() {
+  if (
+    !pendingSnapshotRestore ||
+    snapshotBusy
+  ) {
+    return;
+  }
+
+  if (
+    !backupSetupComplete ||
+    (
+      backupMode === "automatic" &&
+      !backupFolder
+    )
+  ) {
+    setBackupSetupOpen(true);
+    return;
+  }
+
+  if (backupMode === "automatic") {
+    await performTrackerSnapshotRestore(
+      true,
+    );
+    return;
+  }
+
+  if (backupMode === "ask") {
+    setBackupPromptOpen(true);
+    return;
+  }
+
+  await performTrackerSnapshotRestore(
+    false,
+  );
+}
+
+async function chooseAutomaticBackupFolderAndRestore() {
+  try {
+    setAppError("");
+
+    const selected =
+      await chooseBackupFolder();
+
+    if (!selected) {
+      return;
+    }
+
+    await persistBackupMode(
+      "automatic",
+    );
+
+    setBackupSetupOpen(false);
+
+    await performTrackerSnapshotRestore(
+      true,
+      selected,
+    );
+  } catch (error) {
+    console.error(
+      "Could not set up automatic backups:",
+      error,
+    );
+
+    setAppError(
+      error instanceof Error
+        ? error.message
+        : String(error),
+    );
+  }
+}
+
+async function useAskEveryTimeBackupMode() {
+  try {
+    setAppError("");
+
+    await persistBackupMode(
+      "ask",
+    );
+
+    setBackupSetupOpen(false);
+    setBackupPromptOpen(true);
+  } catch (error) {
+    console.error(
+      "Could not save backup setting:",
+      error,
+    );
+
+    setAppError(
+      error instanceof Error
+        ? error.message
+        : String(error),
+    );
+  }
+}
+
+async function disableAutomaticBackupsAndRestore() {
+  try {
+    setAppError("");
+
+    await persistBackupMode(
+      "off",
+    );
+
+    setBackupSetupOpen(false);
+
+    await performTrackerSnapshotRestore(
+      false,
+    );
+  } catch (error) {
+    console.error(
+      "Could not save backup setting:",
+      error,
+    );
+
+    setAppError(
+      error instanceof Error
+        ? error.message
+        : String(error),
+    );
+  }
+}
+
+async function createBackupAndRestoreFromPrompt() {
+  try {
+    setAppError("");
+
+    let selectedFolder =
+      backupFolder;
+
+    if (!selectedFolder) {
+      const selected =
+        await chooseBackupFolder();
+
+      if (!selected) {
+        return;
+      }
+
+      selectedFolder =
+        selected;
+    }
+
+    setBackupPromptOpen(false);
+
+    await performTrackerSnapshotRestore(
+      true,
+      selectedFolder,
+    );
+  } catch (error) {
+    console.error(
+      "Could not create backup:",
+      error,
+    );
+
+    setAppError(
+      error instanceof Error
+        ? error.message
+        : String(error),
+    );
+  }
+}
+
   async function minimizeMainWindow() {
     setClosePromptOpen(false);
 
@@ -8367,18 +8897,60 @@ setActiveProfileId(
             )}
         </div>
 
-        <button
-          className="import-button"
-          type="button"
-          onClick={handleImport}
-          disabled={isImporting || !databaseReady}
-        >
-          {isImporting
-            ? "Importing..."
-            : uniques.length > 0
-              ? "Import Another Collection"
-              : "Import Existing Collection"}
-        </button>
+        <div className="collection-actions">
+  <div className="collection-action-buttons">
+    <button
+      className="import-button"
+      type="button"
+      onClick={handleImport}
+      disabled={
+        isImporting ||
+        snapshotBusy ||
+        !databaseReady
+      }
+    >
+      {isImporting
+        ? "Importing..."
+        : uniques.length > 0
+          ? "Import Collection"
+          : "Import Existing Collection"}
+    </button>
+
+    <button
+      className="snapshot-button"
+      type="button"
+      onClick={() =>
+        void handleExportTrackerSnapshot()
+      }
+      disabled={
+        snapshotBusy ||
+        !databaseReady
+      }
+    >
+      Export Snapshot
+    </button>
+
+    <button
+      className="snapshot-button"
+      type="button"
+      onClick={() =>
+        void handleChooseTrackerSnapshot()
+      }
+      disabled={
+        snapshotBusy ||
+        !databaseReady
+      }
+    >
+      Restore Snapshot
+    </button>
+  </div>
+
+  {snapshotMessage && (
+    <span className="snapshot-message">
+      {snapshotMessage}
+    </span>
+  )}
+</div>
       </section>
 
       {appError && (
@@ -9678,6 +10250,269 @@ editionSources={
   />
 )}
 
+{pendingSnapshotRestore && (
+  <div className="catalogue-update-overlay">
+    <section className="catalogue-update-modal">
+      <div className="catalogue-update-heading">
+        <span className="catalogue-update-kicker">
+          RESTORE TRACKER SNAPSHOT
+        </span>
+
+        <h2>
+          Replace the entire tracker?
+        </h2>
+
+        <p>
+          This snapshot will replace every current
+          collection on this computer.
+        </p>
+      </div>
+
+      <div className="catalogue-update-stats">
+        <div>
+          <strong>
+            {
+              pendingSnapshotRestore
+                .profiles.length
+            }
+          </strong>
+          <span>collections</span>
+        </div>
+
+        <div>
+          <strong>
+            {
+              pendingSnapshotRestore
+                .profiles.filter(
+                  (profile) =>
+                    profile.isArchived,
+                ).length
+            }
+          </strong>
+          <span>archived</span>
+        </div>
+      </div>
+
+      <p className="catalogue-update-note">
+        Snapshot:{" "}
+        <strong>
+          {
+            pendingSnapshotRestore
+              .fileName
+          }
+        </strong>
+      </p>
+
+      <p className="catalogue-update-note">
+        Contains:{" "}
+        {pendingSnapshotRestore.profiles
+          .map((profile) =>
+            profile.isArchived
+              ? `${profile.name} (archived)`
+              : profile.name,
+          )
+          .join(", ")}
+      </p>
+
+      <p className="catalogue-update-note">
+        Your existing Standard, league,
+        and archived collection data will
+        be replaced by the snapshot.
+      </p>
+
+      {snapshotRestoreError && (
+  <div
+    style={{
+      margin: "0 26px 18px",
+      padding: "12px 14px",
+      border: "1px solid #8f4949",
+      borderRadius: 8,
+      background:
+        "rgba(143, 73, 73, 0.12)",
+      color: "#e3b0b0",
+    }}
+  >
+    <strong
+      style={{
+        display: "block",
+        marginBottom: 4,
+      }}
+    >
+      Restore stopped
+    </strong>
+
+    <span>
+      {snapshotRestoreError}
+    </span>
+  </div>
+)}
+
+      <div className="catalogue-update-actions">
+        <button
+          type="button"
+          className="catalogue-update-secondary"
+          disabled={snapshotBusy}
+          onClick={() => {
+  setSnapshotRestoreError("");
+  setPendingSnapshotRestore(null);
+}}
+        >
+          Cancel
+        </button>
+
+        <button
+          type="button"
+          className="catalogue-update-primary"
+          disabled={snapshotBusy}
+          onClick={() =>
+  void beginTrackerSnapshotRestore()
+}
+        >
+          {snapshotBusy
+            ? "Restoring..."
+            : "Restore Entire Tracker"}
+        </button>
+      </div>
+    </section>
+  </div>
+)}
+
+{backupSetupOpen &&
+  pendingSnapshotRestore && (
+    <div className="catalogue-update-overlay">
+      <section className="catalogue-update-modal">
+        <div className="catalogue-update-heading">
+          <span className="catalogue-update-kicker">
+            LOCAL BACKUPS
+          </span>
+
+          <h2>
+            Set up local backups
+          </h2>
+
+          <p>
+            PoE 2 Unique Tracker can automatically
+            create a backup of your current tracker
+            before restoring a snapshot.
+          </p>
+
+          <p>
+            This helps you undo an accidental
+            restore.
+          </p>
+
+          <p>
+            Choose where you want these backup
+            files stored. You can change this at
+            any time in Settings → Backup.
+          </p>
+        </div>
+
+        <div className="catalogue-update-actions">
+          <button
+            type="button"
+            className="catalogue-update-secondary"
+            onClick={() => {
+              setBackupSetupOpen(false);
+              setPendingSnapshotRestore(null);
+            }}
+          >
+            Cancel Restore
+          </button>
+
+          <button
+            type="button"
+            className="catalogue-update-secondary"
+            onClick={() =>
+              void useAskEveryTimeBackupMode()
+            }
+          >
+            Ask Me Every Time
+          </button>
+
+          <button
+            type="button"
+            className="catalogue-update-secondary"
+            onClick={() =>
+              void disableAutomaticBackupsAndRestore()
+            }
+          >
+            Disable Automatic Backups
+          </button>
+
+          <button
+            type="button"
+            className="catalogue-update-primary"
+            onClick={() =>
+              void chooseAutomaticBackupFolderAndRestore()
+            }
+          >
+            Choose Backup Folder
+          </button>
+        </div>
+      </section>
+    </div>
+  )}
+
+{backupPromptOpen &&
+  pendingSnapshotRestore && (
+    <div className="catalogue-update-overlay">
+      <section className="catalogue-update-modal">
+        <div className="catalogue-update-heading">
+          <span className="catalogue-update-kicker">
+            SNAPSHOT RESTORE
+          </span>
+
+          <h2>
+            Create local backup?
+          </h2>
+
+          <p>
+            Would you like to save a backup of
+            your current tracker before replacing
+            it with this snapshot?
+          </p>
+        </div>
+
+        <div className="catalogue-update-actions">
+          <button
+            type="button"
+            className="catalogue-update-secondary"
+            onClick={() =>
+              setBackupPromptOpen(false)
+            }
+          >
+            Cancel
+          </button>
+
+          <button
+            type="button"
+            className="catalogue-update-secondary"
+            onClick={() => {
+              setBackupPromptOpen(false);
+
+              void performTrackerSnapshotRestore(
+                false,
+              );
+            }}
+          >
+            Restore Without Backup
+          </button>
+
+          <button
+            type="button"
+            className="catalogue-update-primary"
+            onClick={() =>
+              void createBackupAndRestoreFromPrompt()
+            }
+          >
+            Create Backup & Restore
+          </button>
+        </div>
+      </section>
+    </div>
+  )}
+
             {closePromptOpen && (
         <div className="catalogue-update-overlay">
           <section className="catalogue-update-modal">
@@ -9894,6 +10729,105 @@ editionSources={
       {hotkeySettingMessage}
     </p>
   )}
+</div>
+
+<div className="settings-section settings-divider-section">
+  <h3>Backup</h3>
+
+  <p className="settings-help">
+    Choose what PoE 2 Unique Tracker should do
+    before replacing your collection data with a
+    snapshot.
+  </p>
+
+  <div
+    style={{
+      display: "grid",
+      gap: 8,
+    }}
+  >
+    <label
+      className="settings-help"
+      htmlFor="snapshot-backup-mode"
+    >
+      Before restoring a snapshot
+    </label>
+
+    <select
+      id="snapshot-backup-mode"
+      className="collection-profile-select"
+      value={backupMode}
+      disabled={!database}
+      onChange={(event) =>
+        void handleBackupModeSettingChange(
+          event.target.value as BackupMode,
+        )
+      }
+    >
+      <option value="automatic">
+        Automatic
+      </option>
+
+      <option value="ask">
+        Ask every time
+      </option>
+
+      <option value="off">
+        Off
+      </option>
+    </select>
+  </div>
+
+  <p
+  className="settings-help"
+  style={{ marginTop: 8 }}
+>
+  {backupMode === "automatic"
+    ? "A local backup is created automatically before every snapshot restore."
+    : backupMode === "ask"
+      ? "The tracker asks whether you want a local backup before every snapshot restore."
+      : "Snapshot restores continue without creating an automatic local backup."}
+</p>
+
+  <div
+    style={{
+      marginTop: 14,
+      display: "grid",
+      gap: 8,
+    }}
+  >
+    <strong>Backup location</strong>
+
+    <p
+      className="catalogue-check-status"
+      style={{
+        wordBreak: "break-word",
+      }}
+    >
+      {backupFolder ||
+        "No backup folder chosen."}
+    </p>
+
+    <button
+      type="button"
+      className="reset-settings-button"
+      disabled={!database}
+      onClick={() =>
+        void handleChooseBackupFolderSetting()
+      }
+    >
+      Choose Folder
+    </button>
+  </div>
+
+  {backupMode === "automatic" &&
+    !backupFolder && (
+      <p className="settings-help">
+        You will be asked to choose a backup
+        folder before the first automatic backup
+        is created.
+      </p>
+    )}
 </div>
 
             <div className="settings-section settings-divider-section">
