@@ -19,6 +19,7 @@ import {
   primaryMonitor,
 } from "@tauri-apps/api/window";
 import { invoke } from "@tauri-apps/api/core";
+import { getVersion } from "@tauri-apps/api/app";
 import { readText, writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { register, unregister } from "@tauri-apps/plugin-global-shortcut";
 import { read, utils } from "xlsx";
@@ -2898,6 +2899,7 @@ function MainApp() {
   const [sortMode, setSortMode] = useState<SortMode>("alphabetical");
 
   const [settingsOpen, setSettingsOpen] = useState(false);
+const [appVersion, setAppVersion] = useState("");
   const [statusColors, setStatusColors] =
     useState<StatusColors>(DEFAULT_STATUS_COLORS);
   const [collectionRules, setCollectionRules] =
@@ -3059,6 +3061,19 @@ const [
     ) ?? null,
   [collectionProfiles, activeProfileId],
 );
+
+useEffect(() => {
+  void getVersion()
+    .then((version) => {
+      setAppVersion(version);
+    })
+    .catch((error) => {
+      console.error(
+        "Could not read app version:",
+        error,
+      );
+    });
+}, []);
 
 useEffect(() => {
   let unlistenClose:
@@ -10753,7 +10768,13 @@ editionSources={
             <div className="settings-modal-header">
               <div>
                 <h2>Settings</h2>
-                <p>Customize how PoE 2 Unique Tracker looks and behaves.</p>
+<p>Customize how PoE 2 Unique Tracker looks and behaves.</p>
+
+{appVersion && (
+  <p className="settings-version">
+    Version: {appVersion}
+  </p>
+)}
               </div>
 
               <button

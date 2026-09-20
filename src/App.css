@@ -615,6 +615,12 @@ button.tracking-badge:not(.active):hover {
   font-size: 12px;
 }
 
+.settings-modal-header .settings-version {
+  margin-top: 5px;
+  color: #665f56;
+  font-size: 10px;
+}
+
 .settings-close {
   width: 34px;
   height: 34px;
