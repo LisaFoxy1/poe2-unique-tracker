@@ -1261,6 +1261,38 @@ button.tracking-badge:not(.active):hover {
   text-transform: uppercase;
 }
 
+.poe-overlay-tracking-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.poe-overlay-profile-select {
+  min-width: 0;
+  max-width: 240px;
+  padding: 5px 28px 5px 9px;
+  border: 1px solid #4b4338;
+  border-radius: 6px;
+  outline: none;
+  background: #181613;
+  color: #ded4c5;
+  font: inherit;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: none;
+  letter-spacing: normal;
+  cursor: pointer;
+}
+
+.poe-overlay-profile-select:hover {
+  border-color: #6a5b47;
+}
+
+.poe-overlay-profile-select:focus {
+  border-color: #8f7959;
+}
+
 .search-input-wrap {
   position: relative;
 }

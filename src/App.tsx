@@ -1826,6 +1826,7 @@ type OverlayProfileState = {
   id: string;
   name: string;
   flags: TrackingFlag[];
+  reviewed: boolean;
 };
 
 type OverlayPayload = {
@@ -1856,10 +1857,14 @@ type OverlayAction =
       flag: TrackingFlag;
       enabled: boolean;
     }
-  | {
+    | {
       kind: "missing";
       profileId: string;
       uniqueId: string;
+    }
+  | {
+      kind: "profile";
+      profileId: string;
     };
 
 function getOverlayPayloadFromUrl(): OverlayPayload | null {
@@ -1921,6 +1926,9 @@ useEffect(() => {
   | number
   | undefined;
 
+  let snippingGraceUntil = 0;
+  let focusTransitionUntil = 0;
+
 const resolveFocusChange =
   async () => {
     try {
@@ -1930,22 +1938,37 @@ const resolveFocusChange =
         );
 
       if (
-        mainWindow &&
-        await mainWindow.isFocused()
-      ) {
-        const itemName =
-          lastMatchedNameRef.current;
+  mainWindow &&
+  await mainWindow.isFocused()
+) {
+  if (
+    Date.now() <
+    focusTransitionUntil
+  ) {
+    focusCheckTimer =
+      window.setTimeout(
+        () => {
+          void resolveFocusChange();
+        },
+        100,
+      );
 
-        if (itemName) {
-          await emit<string>(
-            "poe-overlay-search-item",
-            itemName,
-          );
-        }
+    return;
+  }
 
-        await currentWindow.hide();
-        return;
-      }
+  const itemName =
+    lastMatchedNameRef.current;
+
+  if (itemName) {
+    await emit<string>(
+      "poe-overlay-search-item",
+      itemName,
+    );
+  }
+
+  await currentWindow.hide();
+  return;
+}
 
       const foregroundProcess =
         await invoke<string>(
@@ -1955,6 +1978,19 @@ const resolveFocusChange =
       const normalizedProcess =
         foregroundProcess.toLowerCase();
 
+        const isPathOfExile =
+  normalizedProcess.includes(
+    "pathofexile",
+  );
+
+  const isWindowsFocusTransition =
+  normalizedProcess === "" ||
+  normalizedProcess === "explorer.exe" ||
+  normalizedProcess ===
+    "applicationframehost.exe" ||
+  normalizedProcess ===
+    "shellexperiencehost.exe";
+
       const isSnippingTool =
         normalizedProcess ===
           "snippingtool.exe" ||
@@ -1962,16 +1998,51 @@ const resolveFocusChange =
           "screenclippinghost.exe";
 
       if (isSnippingTool) {
-        focusCheckTimer =
-          window.setTimeout(
-            () => {
-              void resolveFocusChange();
-            },
-            250,
-          );
+  snippingGraceUntil =
+    Date.now() + 20000;
 
-        return;
-      }
+  focusCheckTimer =
+    window.setTimeout(
+      () => {
+        void resolveFocusChange();
+      },
+      250,
+    );
+
+  return;
+}
+
+if (
+  snippingGraceUntil > Date.now() &&
+  !isPathOfExile
+) {
+  focusCheckTimer =
+    window.setTimeout(
+      () => {
+        void resolveFocusChange();
+      },
+      250,
+    );
+
+  return;
+}
+
+if (
+  isWindowsFocusTransition &&
+  Date.now() < focusTransitionUntil
+) {
+  focusCheckTimer =
+    window.setTimeout(
+      () => {
+        void resolveFocusChange();
+      },
+      100,
+    );
+
+  return;
+}
+
+await currentWindow.hide();
 
       await currentWindow.hide();
     } catch (error) {
@@ -1995,6 +2066,9 @@ const handleBlur = () => {
       focusCheckTimer,
     );
   }
+
+  focusTransitionUntil =
+  Date.now() + 900;
 
   focusCheckTimer =
     window.setTimeout(
@@ -2158,11 +2232,6 @@ const statusValue =
         )
         .join(" • ");
 
-  const trackingHeading =
-    payload.trackingProfileId === STANDARD_PROFILE_ID
-      ? "Update Standard"
-      : `Record in ${payload.trackingProfileName}`;
-
       const showFoil =
   shouldShowEdition(
     "foil",
@@ -2225,6 +2294,49 @@ const hasUncertainEdition =
   foulbornUncertain ||
   vestigialUncertain;
 
+  async function changeTrackingProfile(
+  profileId: string,
+) {
+  if (!payload) {
+    return;
+  }
+
+  const profile =
+    payload.profileStates.find(
+      (entry) =>
+        entry.id === profileId,
+    );
+
+  if (!profile) {
+    return;
+  }
+
+  setPayload((current) =>
+    current
+      ? {
+          ...current,
+          trackingProfileId:
+            profile.id,
+          trackingProfileName:
+            profile.name,
+          trackingFlags: [
+            ...profile.flags,
+          ],
+          trackingReviewed:
+            profile.reviewed,
+        }
+      : current,
+  );
+
+  await emit<OverlayAction>(
+    "poe-overlay-action",
+    {
+      kind: "profile",
+      profileId,
+    },
+  );
+}
+
   async function toggleFlag(flag: TrackingFlag) {
     if (!payload) {
       return;
@@ -2267,10 +2379,11 @@ const hasUncertainEdition =
           profile.id ===
           current.trackingProfileId
             ? {
-                ...profile,
-                flags:
-                  nextTrackingFlags,
-              }
+    ...profile,
+    reviewed: true,
+    flags:
+      nextTrackingFlags,
+  }
             : profile,
       ),
   };
@@ -2306,9 +2419,10 @@ const hasUncertainEdition =
               profile.id ===
               current.trackingProfileId
                 ? {
-                    ...profile,
-                    flags: [],
-                  }
+    ...profile,
+    reviewed: true,
+    flags: [],
+  }
                 : profile,
           ),
       }
@@ -2383,8 +2497,29 @@ const hasUncertainEdition =
       </div>
 
       <div className="poe-overlay-tracking-heading">
-        {trackingHeading}
-      </div>
+  <span>Record in</span>
+
+  <select
+    className="poe-overlay-profile-select"
+    value={payload.trackingProfileId}
+    onChange={(event) =>
+      void changeTrackingProfile(
+        event.target.value,
+      )
+    }
+  >
+    {payload.profileStates.map(
+      (profile) => (
+        <option
+          key={profile.id}
+          value={profile.id}
+        >
+          {profile.name}
+        </option>
+      ),
+    )}
+  </select>
+</div>
 
       <div className="poe-overlay-actions">
         <button
@@ -4320,6 +4455,7 @@ const isLegacyOnly =
   async function runCatalogueCheck(
     db: Database,
     force = false,
+    profileId = activeProfileId,
   ) {
     if (catalogueChecking) {
       return;
@@ -4560,9 +4696,9 @@ const isLegacyOnly =
       );
 
       await loadCollectionData(
-        db,
-        activeProfileId,
-      );
+  db,
+  profileId,
+);
 
       const checkedTime =
         new Date(
@@ -5264,6 +5400,13 @@ useEffect(() => {
       (event) => {
         const action = event.payload;
 
+        if (action.kind === "profile") {
+  void handleCollectionProfileChange(
+    action.profileId,
+  );
+  return;
+}
+
         if (action.kind === "missing") {
           void markUniqueMissing(
             action.uniqueId,
@@ -5756,9 +5899,10 @@ void (async () => {
   );
 
   await runCatalogueCheck(
-    db,
-    false,
-  );
+  db,
+  false,
+  profileState.activeProfileId,
+);
 })();
       } catch (error) {
         console.error(error);
@@ -6237,24 +6381,33 @@ async function showOverlayLoading(
       id: string;
       name: string;
       flag: string | null;
+      reviewed: number;
     }[]
   >(
     `
       SELECT
         profiles.id,
         profiles.name,
-        tracking.flag
+        tracking.flag,
+        COALESCE(review.reviewed, 0) AS reviewed
       FROM collection_profiles profiles
       LEFT JOIN profile_unique_tracking tracking
         ON
           tracking.profile_id = profiles.id
           AND tracking.unique_id = ?
+      LEFT JOIN profile_collection_review review
+        ON
+          review.profile_id = profiles.id
+          AND review.unique_id = ?
       WHERE profiles.is_archived = 0
       ORDER BY
         profiles.sort_order ASC,
         profiles.name ASC
     `,
-    [localEntry.id],
+    [
+      localEntry.id,
+      localEntry.id,
+    ],
   );
 
 const profileStatesById =
@@ -6269,10 +6422,11 @@ for (const row of profileStateRows) {
 
   if (!profileState) {
     profileState = {
-      id: row.id,
-      name: row.name,
-      flags: [],
-    };
+  id: row.id,
+  name: row.name,
+  flags: [],
+  reviewed: row.reviewed === 1,
+};
 
     profileStatesById.set(
       row.id,
